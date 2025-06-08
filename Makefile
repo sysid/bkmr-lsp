@@ -48,7 +48,7 @@ all: clean build install  ## all
 	:
 
 .PHONY: all-fast
-all-fast: clean build-fast install-debug  ## all-fast: no release build
+all-fast: build-fast install-debug  ## all-fast: no release build
 	:
 
 .PHONY: upload
@@ -69,12 +69,9 @@ build-fast:  ## build-fast
 	pushd $(pkg_src) && cargo build
 
 .PHONY: install-debug
-install-debug: uninstall  ## install-debug (no release version)
-	@VERSION=$(shell cat VERSION) && \
-		echo "-M- Installing $$VERSION" && \
-		cp -vf bkmr-lsp/target/debug/$(BINARY) ~/bin/$(BINARY)$$VERSION && \
-		ln -vsf ~/bin/$(BINARY)$$VERSION ~/bin/$(BINARY)
-		~/bin/$(BINARY) completion bash > ~/.bash_completions/bkmr-lsp
+install-debug: uninstall  ## install-debug (links to target/debug)
+	@ln -vsf $(realpath bkmr-lsp/target/debug/$(BINARY)) $(HOME)/bin/$(BINARY)
+
 
 .PHONY: install
 install: uninstall  ## install
