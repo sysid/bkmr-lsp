@@ -1,0 +1,31 @@
+[package]
+name = "bkmr-lsp"
+version = "0.1.2"
+edition = "2024"
+description = "Language Server Protocol implementation for bkmr snippet manager"
+repository = "https://github.com/sysid/bkmr-lsp"
+readme = "../README.md"
+license = "BSD-3-Clause"
+authors = ["sysid <sysid@gmx.de>"]
+homepage = "https://github.com/sysid/bkmr-lsp"
+keywords = ["bookmark", "terminal", "snippet", "lsp"]
+
+[[bin]]
+name = "bkmr-lsp"
+path = "src/main.rs"
+
+[dependencies]
+tower-lsp = "0.20"      # async LSP façade  :contentReference[oaicite:2]{index=2}
+tokio     = { version = "1", features = ["full"] }
+serde     = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow    = "1"
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+tokio-test = "0.4.4"
+
+[profile.release]
+codegen-units = 1
+lto = true

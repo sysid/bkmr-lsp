@@ -1,9 +1,21 @@
 # bkmr-lsp
+Why this is safe:
+
+No unsafe Rust; command output is parsed with serde_json so injection is impossible.
+
+Only the snippet body is echoed back to the editor; no shell execution.
+
+The skeleton follows the official tower-lsp README example
+and mirrors how simple-completion-language-server does word/snippet completion
+
+```bash
+RUST_LOG=debug ./target/release/bkmr-lsp 2>lsp.log &
+```
 
 ## Spelunking
 ```bash
 # Fire up the server on one side, hexdump lets you see the exact bytes leaving the server.
-./target/release/bkmr-lsp-poc | hexdump -C &
+./target/release/bkmr_lsp-poc | hexdump -C &
 SERVER_PID=$!
 
 # Initialise the session
@@ -23,4 +35,14 @@ send '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
 ```
 You’ll get back a `CompletionList` whose `insertText` fields are the first five snippets pulled from bkmr.
 Feel free to change the server code, rebuild, and replay the same frames to see what changes—nothing beats visualising raw packets for LSP literacy.
-# bkmr-lsp
+
+### netcat
+```bash
+# Terminal 1: Start LSP server 
+./target/release/bkmr-lsp
+
+# Terminal 2: Send messages
+echo 'Content-Length: 131
+
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"textDocument":{"completion":{"completionItem":{"snippetSupport":true}}}}}}' | nc localhost 3000
+```
