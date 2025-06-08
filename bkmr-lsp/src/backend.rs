@@ -1,7 +1,6 @@
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
-use std::process::Command;
-use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
+use tower_lsp::{jsonrpc::Result as LspResult, lsp_types::*, Client, LanguageServer};
 use tracing::{debug, error, info, instrument, warn};
 
 /// Configuration for the bkmr-lsp server
@@ -98,6 +97,7 @@ impl BkmrLspBackend {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
+            "--interpolate".to_string(),  // ← ADD THIS: Always use interpolation
             "-t".to_string(),
             "_snip_".to_string(),
             "--limit".to_string(),
@@ -115,10 +115,22 @@ impl BkmrLspBackend {
 
         debug!("Executing bkmr with args: {:?}", args);
 
-        let output = Command::new(&self.config.bkmr_binary)
+        // Add timeout to prevent hanging
+        let command_future = tokio::process::Command::new(&self.config.bkmr_binary)
             .args(&args)
-            .output()
-            .map_err(|e| anyhow!("Failed to execute bkmr: {}", e))?;
+            .output();
+
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                error!("Failed to execute bkmr: {}", e);
+                return Err(anyhow!("Failed to execute bkmr: {}", e));
+            }
+            Err(_) => {
+                error!("bkmr command timed out after 10 seconds");
+                return Err(anyhow!("bkmr command timed out"));
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -139,11 +151,12 @@ impl BkmrLspBackend {
             anyhow!("Failed to parse bkmr JSON output: {}", e)
         })?;
 
-        info!("Successfully fetched {} snippets", snippets.len());
+        info!("Successfully fetched {} interpolated snippets", snippets.len());
         Ok(snippets)
     }
 
     /// Convert bkmr snippet to LSP completion item
+    /// Note: snippet.url now contains interpolated content thanks to --interpolate flag
     fn snippet_to_completion_item(
         &self,
         snippet: &BkmrSnippet,
@@ -216,10 +229,19 @@ impl BkmrLspBackend {
     async fn verify_bkmr_availability(&self) -> Result<()> {
         debug!("Verifying bkmr availability");
 
-        let output = Command::new(&self.config.bkmr_binary)
+        let command_future = tokio::process::Command::new(&self.config.bkmr_binary)
             .args(&["--help"])
-            .output()
-            .map_err(|e| anyhow!("bkmr binary not found: {}", e))?;
+            .output();
+
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Err(anyhow!("bkmr binary not found: {}", e));
+            }
+            Err(_) => {
+                return Err(anyhow!("bkmr --help command timed out"));
+            }
+        };
 
         if !output.status.success() {
             return Err(anyhow!("bkmr binary is not working properly"));
@@ -279,7 +301,8 @@ impl LanguageServer for BkmrLspBackend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+                    // trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
+                    trigger_characters: None,
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
@@ -418,25 +441,39 @@ impl LanguageServer for BkmrLspBackend {
                 if !params.arguments.is_empty() {
                     if let Some(id_value) = params.arguments.get(0) {
                         if let Some(id) = id_value.as_i64() {
-                            match Command::new(&self.config.bkmr_binary)
+                            let command_future = tokio::process::Command::new(&self.config.bkmr_binary)
                                 .args(&["open", &id.to_string()])
-                                .status()
-                            {
-                                Ok(_) => {
-                                    info!("Successfully opened bookmark {}", id);
-                                    self.client
-                                        .show_message(
-                                            MessageType::INFO,
-                                            &format!("Opened bookmark {}", id),
-                                        )
-                                        .await;
+                                .status();
+
+                            match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+                                Ok(Ok(status)) => {
+                                    if status.success() {
+                                        info!("Successfully opened bookmark {}", id);
+                                        self.client
+                                            .show_message(
+                                                MessageType::INFO,
+                                                &format!("Opened bookmark {}", id),
+                                            )
+                                            .await;
+                                    } else {
+                                        warn!("bkmr open command failed for bookmark {} with exit code: {:?}", id, status.code());
+                                    }
                                 }
-                                Err(e) => {
-                                    error!("Failed to open bookmark {}: {}", id, e);
+                                Ok(Err(e)) => {
+                                    error!("Failed to execute bkmr open for bookmark {}: {}", id, e);
                                     self.client
                                         .show_message(
                                             MessageType::ERROR,
                                             &format!("Failed to open bookmark {}: {}", id, e),
+                                        )
+                                        .await;
+                                }
+                                Err(_) => {
+                                    error!("bkmr open command timed out for bookmark {}", id);
+                                    self.client
+                                        .show_message(
+                                            MessageType::ERROR,
+                                            &format!("Bookmark {} open timed out", id),
                                         )
                                         .await;
                                 }
