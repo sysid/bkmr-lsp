@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use std::process::Command;
+use std::sync::Arc;
+use tokio::sync::RwLock;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -35,9 +36,8 @@ pub struct BkmrSnippet {
 #[derive(Debug)]
 pub struct BkmrLspBackend {
     client: Client,
-    config: BkmrConfig,
-    /// Cache of document contents to extract prefixes
-    document_cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
+    config: Arc<RwLock<BkmrConfig>>,
+    cached_snippets: Arc<RwLock<Vec<BkmrSnippet>>>,
 }
 
 impl BkmrLspBackend {
@@ -45,164 +45,140 @@ impl BkmrLspBackend {
         debug!("Creating BkmrLspBackend");
         Self {
             client,
-            config: BkmrConfig::default(),
-            document_cache: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            config: Arc::new(RwLock::new(BkmrConfig::default())),
+            cached_snippets: Arc::new(RwLock::new(Vec::new())),
         }
     }
 
-    /// Extract prefix from document at given position
-    #[instrument(skip(self))]
-    fn extract_prefix_at_position(&self, uri: &Url, position: Position) -> Option<String> {
-        // For LSP servers, we typically need to track document content changes
-        // For now, we'll implement a simple fallback that works with most editors
-        
-        // Try to get document content from cache
-        let cache = self.document_cache.read().ok()?;
-        let content = cache.get(&uri.to_string())?;
-        
-        let lines: Vec<&str> = content.lines().collect();
-        if position.line as usize >= lines.len() {
-            return None;
-        }
-        
-        let line = lines[position.line as usize];
-        let char_pos = position.character as usize;
-        
-        if char_pos > line.len() {
-            return None;
-        }
-        
-        // Extract word before cursor position
-        let before_cursor = &line[..char_pos];
-        
-        // Find the start of the current word (alphanumeric + underscore)
-        let word_start = before_cursor
-            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-        
-        let prefix = before_cursor[word_start..].trim();
-        
-        debug!("Extracted prefix: '{}' from line: '{}' at position: {}", prefix, line, char_pos);
-        
-        if prefix.is_empty() {
-            None
-        } else {
-            Some(prefix.to_string())
-        }
-    }
-
-    /// Execute bkmr command and return parsed snippets
+    /// Execute bkmr command and return parsed snippets with timeout
     #[instrument(skip(self))]
     async fn fetch_snippets(&self, prefix: Option<&str>) -> Result<Vec<BkmrSnippet>> {
+        let config = self.config.read().await;
+        
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
             "-t".to_string(),
             "_snip_".to_string(),
             "--limit".to_string(),
-            self.config.max_completions.to_string(),
+            config.max_completions.to_string(),
         ];
 
         // Add search term if prefix is provided and not empty
         if let Some(p) = prefix {
-            if !p.trim().is_empty() {
-                // Use title prefix search for better snippet matching
-                args.push(format!("metadata:{}*", p));
-                debug!("Using search prefix: {}", p);
+            let trimmed = p.trim();
+            if !trimmed.is_empty() {
+                args.push(format!("metadata:{}", trimmed));
+                debug!("Using search prefix: {}", trimmed);
             }
         }
 
         debug!("Executing bkmr with args: {:?}", args);
 
-        let output = Command::new(&self.config.bkmr_binary)
+        // Add timeout to prevent hanging
+        let command_future = tokio::process::Command::new(&config.bkmr_binary)
             .args(&args)
-            .output()
-            .map_err(|e| anyhow!("Failed to execute bkmr: {}", e))?;
+            .output();
+
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                error!("Failed to execute bkmr: {}", e);
+                return Err(anyhow!("Failed to execute bkmr: {}", e));
+            }
+            Err(_) => {
+                error!("bkmr command timed out after 10 seconds");
+                return Err(anyhow!("bkmr command timed out"));
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            error!("bkmr command failed with stderr: {}", stderr);
-            return Err(anyhow!("bkmr command failed: {}", stderr));
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            error!("bkmr command failed. Exit code: {:?}", output.status.code());
+            error!("stderr: {}", stderr);
+            error!("stdout: {}", stdout);
+            return Err(anyhow!("bkmr command failed with exit code: {:?}", output.status.code()));
         }
 
         let stdout_str = String::from_utf8_lossy(&output.stdout);
+        let trimmed_output = stdout_str.trim();
 
-        if stdout_str.trim().is_empty() {
+        if trimmed_output.is_empty() {
             debug!("Empty output from bkmr");
             return Ok(Vec::new());
         }
 
-        let snippets: Vec<BkmrSnippet> = serde_json::from_str(&stdout_str).map_err(|e| {
-            error!("Failed to parse bkmr JSON output: {}", e);
-            error!("Raw output was: {}", stdout_str);
-            anyhow!("Failed to parse bkmr JSON output: {}", e)
-        })?;
+        // Handle case where output might not be valid JSON array
+        let snippets: Vec<BkmrSnippet> = match serde_json::from_str(trimmed_output) {
+            Ok(snippets) => snippets,
+            Err(e) => {
+                error!("Failed to parse bkmr JSON output: {}", e);
+                error!("Raw output was: {}", trimmed_output);
+                
+                // Try to parse as single object and wrap in array
+                match serde_json::from_str::<BkmrSnippet>(trimmed_output) {
+                    Ok(single_snippet) => {
+                        debug!("Parsed single snippet, wrapping in array");
+                        vec![single_snippet]
+                    }
+                    Err(_) => {
+                        return Err(anyhow!("Failed to parse bkmr JSON output: {}", e));
+                    }
+                }
+            }
+        };
 
         info!("Successfully fetched {} snippets", snippets.len());
+        
+        // Update cache
+        let mut cache = self.cached_snippets.write().await;
+        *cache = snippets.clone();
+        
         Ok(snippets)
     }
 
     /// Convert bkmr snippet to LSP completion item
-    fn snippet_to_completion_item(
-        &self,
-        snippet: &BkmrSnippet,
-        position: Position,
-        prefix: Option<&str>,
-    ) -> CompletionItem {
+    fn snippet_to_completion_item(&self, snippet: &BkmrSnippet) -> CompletionItem {
         let insert_text = snippet.url.clone(); // URL contains the actual snippet content
         let label = snippet.title.clone(); // Title is what user sees for selection
 
-        // Calculate the range for text replacement based on prefix
-        let replace_range = if let Some(prefix_str) = prefix {
-            if !prefix_str.is_empty() && position.character >= prefix_str.len() as u32 {
-                Range {
-                    start: Position {
-                        line: position.line,
-                        character: position.character - prefix_str.len() as u32,
-                    },
-                    end: position,
+        // Create documentation with snippet preview
+        let doc_text = if snippet.description.is_empty() {
+            format!(
+                "ID: {}\nTags: {}\n\n{}",
+                snippet.id,
+                snippet.tags.join(", "),
+                if insert_text.len() > 300 {
+                    format!("{}...", &insert_text[..300])
+                } else {
+                    insert_text.clone()
                 }
-            } else {
-                Range {
-                    start: position,
-                    end: position,
-                }
-            }
+            )
         } else {
-            Range {
-                start: position,
-                end: position,
-            }
+            format!(
+                "ID: {}\nDescription: {}\nTags: {}\n\n{}",
+                snippet.id,
+                snippet.description,
+                snippet.tags.join(", "),
+                if insert_text.len() > 200 {
+                    format!("{}...", &insert_text[..200])
+                } else {
+                    insert_text.clone()
+                }
+            )
         };
 
         CompletionItem {
             label: label.clone(),
             kind: Some(CompletionItemKind::SNIPPET),
-            // detail: Some(format!("Tags: {}", snippet.tags.join(", "))),
-            // not working, only shows snippet
-            // label_details: Some(CompletionItemLabelDetails {
-            //     detail: Some("bkmr".to_string()),
-            //     description: Some("bkmr".to_string()),
-            // }),
-            documentation: Some(Documentation::String(format!(
-                "{}",
-                if insert_text.len() > 700 {
-                    format!("{}...", &insert_text[..700])
-                } else {
-                    insert_text.clone()
-                }
-            ))),
+            detail: Some(format!("bkmr snippet #{}", snippet.id)),
+            documentation: Some(Documentation::String(doc_text)),
             insert_text: Some(insert_text.clone()),
             insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
-            // Use filter_text to control what text is used for filtering
             filter_text: Some(label.clone()),
             // Use sort_text to control ordering - alphabetical by title
             sort_text: Some(label.clone()),
-            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                range: replace_range,
-                new_text: insert_text,
-            })),
             data: Some(serde_json::json!({
                 "id": snippet.id,
                 "type": "bkmr_snippet"
@@ -214,18 +190,30 @@ impl BkmrLspBackend {
     /// Check if bkmr binary is available
     #[instrument(skip(self))]
     async fn verify_bkmr_availability(&self) -> Result<()> {
-        debug!("Verifying bkmr availability");
+        let config = self.config.read().await;
+        debug!("Verifying bkmr availability for binary: {}", config.bkmr_binary);
 
-        let output = Command::new(&self.config.bkmr_binary)
-            .args(&["--help"])
-            .output()
-            .map_err(|e| anyhow!("bkmr binary not found: {}", e))?;
+        let command_future = tokio::process::Command::new(&config.bkmr_binary)
+            .args(&["--version"])
+            .output();
+
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Err(anyhow!("bkmr binary not found or not executable: {}", e));
+            }
+            Err(_) => {
+                return Err(anyhow!("bkmr --version command timed out"));
+            }
+        };
 
         if !output.status.success() {
-            return Err(anyhow!("bkmr binary is not working properly"));
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(anyhow!("bkmr binary check failed: {}", stderr));
         }
 
-        info!("bkmr binary verified successfully");
+        let version_output = String::from_utf8_lossy(&output.stdout);
+        info!("bkmr binary verified successfully: {}", version_output.trim());
         Ok(())
     }
 }
@@ -234,49 +222,47 @@ impl BkmrLspBackend {
 impl LanguageServer for BkmrLspBackend {
     #[instrument(skip(self, params))]
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
-        info!(
-            "Initialize request received from client: {:?}",
-            params.client_info
-        );
-
-        // Verify bkmr is available
-        if let Err(e) = self.verify_bkmr_availability().await {
-            error!("bkmr verification failed: {}", e);
-            self.client
-                .log_message(
-                    MessageType::ERROR,
-                    &format!("Failed to verify bkmr availability: {}", e),
-                )
-                .await;
+        info!("Initialize request received");
+        
+        if let Some(client_info) = &params.client_info {
+            info!("Client: {} {}", client_info.name, client_info.version.as_deref().unwrap_or("unknown"));
         }
 
-        // Check if client supports snippets
-        let snippet_support = params
-            .capabilities
-            .text_document
-            .as_ref()
-            .and_then(|td| td.completion.as_ref())
-            .and_then(|comp| comp.completion_item.as_ref())
-            .and_then(|item| item.snippet_support)
-            .unwrap_or(false);
+        // Check configuration from initialization options
+        if let Some(init_opts) = params.initialization_options {
+            if let Ok(max_completions) = init_opts.get("maxCompletions")
+                .and_then(|v| v.as_u64())
+                .map(|v| v as usize)
+                .ok_or(())
+            {
+                let mut config = self.config.write().await;
+                config.max_completions = max_completions;
+                info!("Set max_completions to {}", max_completions);
+            }
+        }
 
-        info!("Client snippet support: {}", snippet_support);
-
-        if !snippet_support {
-            warn!("Client does not support snippets");
-            self.client
-                .log_message(
-                    MessageType::WARNING,
-                    "Client does not support snippets, functionality may be limited",
-                )
-                .await;
+        // Verify bkmr is available but don't fail initialization
+        match self.verify_bkmr_availability().await {
+            Ok(_) => {
+                info!("bkmr binary verification successful");
+                
+                // Pre-load snippets in background
+                let backend = self.clone();
+                tokio::spawn(async move {
+                    if let Err(e) = backend.fetch_snippets(None).await {
+                        warn!("Failed to pre-load snippets: {}", e);
+                    } else {
+                        info!("Successfully pre-loaded snippets");
+                    }
+                });
+            }
+            Err(e) => {
+                warn!("bkmr verification failed (server will continue): {}", e);
+            }
         }
 
         let result = InitializeResult {
             capabilities: ServerCapabilities {
-                text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL
-                )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
                     // trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
@@ -289,12 +275,19 @@ impl LanguageServer for BkmrLspBackend {
                     commands: vec!["bkmr.open".to_string(), "bkmr.refresh".to_string()],
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
+                text_document_sync: Some(TextDocumentSyncCapability::Kind(
+                    TextDocumentSyncKind::NONE
+                )),
                 ..Default::default()
             },
+            server_info: Some(ServerInfo {
+                name: "bkmr-lsp".to_string(),
+                version: Some(env!("CARGO_PKG_VERSION").to_string()),
+            }),
             ..Default::default()
         };
 
-        info!("Initialize complete, capabilities: completion and execute_command");
+        info!("Initialize complete");
         Ok(result)
     }
 
@@ -317,84 +310,45 @@ impl LanguageServer for BkmrLspBackend {
     }
 
     #[instrument(skip(self, params))]
-    async fn did_open(&self, params: DidOpenTextDocumentParams) {
-        let uri = params.text_document.uri.to_string();
-        let content = params.text_document.text;
-        
-        debug!("Document opened: {}", uri);
-        
-        if let Ok(mut cache) = self.document_cache.write() {
-            cache.insert(uri, content);
-        }
-    }
-
-    #[instrument(skip(self, params))]
-    async fn did_change(&self, params: DidChangeTextDocumentParams) {
-        let uri = params.text_document.uri.to_string();
-        
-        debug!("Document changed: {}", uri);
-        
-        if let Ok(mut cache) = self.document_cache.write() {
-            for change in params.content_changes {
-                if let Some(content) = cache.get_mut(&uri) {
-                    // For FULL sync, replace entire content
-                    if change.range.is_none() {
-                        *content = change.text;
-                    } else {
-                        // For incremental sync, would need more complex logic
-                        // For now, just replace entirely
-                        *content = change.text;
-                    }
-                }
-            }
-        }
-    }
-
-    #[instrument(skip(self, params))]
-    async fn did_close(&self, params: DidCloseTextDocumentParams) {
-        let uri = params.text_document.uri.to_string();
-        
-        debug!("Document closed: {}", uri);
-        
-        if let Ok(mut cache) = self.document_cache.write() {
-            cache.remove(&uri);
-        }
-    }
-
-    #[instrument(skip(self, params))]
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
         
         debug!("Completion request for {}:{},{}", uri, position.line, position.character);
         
-        // Extract prefix from current position
-        let prefix = self.extract_prefix_at_position(uri, position);
-        
-        debug!("Extracted prefix: {:?}", prefix);
-        
-        match self.fetch_snippets(prefix.as_deref()).await {
+        // Try to get snippets, but always return something
+        let snippets = match self.fetch_snippets(None).await {
             Ok(snippets) => {
-                let completion_items: Vec<CompletionItem> = snippets
-                    .iter()
-                    .map(|snippet| self.snippet_to_completion_item(snippet, position, prefix.as_deref()))
-                    .collect();
-
-                info!("Returning {} completion items for prefix: {:?}", completion_items.len(), prefix);
-
-                Ok(Some(CompletionResponse::Array(completion_items)))
+                debug!("Successfully fetched {} snippets", snippets.len());
+                snippets
             }
             Err(e) => {
-                error!("Failed to fetch snippets: {}", e);
-                self.client
-                    .log_message(
-                        MessageType::ERROR,
-                        &format!("Failed to fetch snippets: {}", e),
-                    )
-                    .await;
-                Ok(Some(CompletionResponse::Array(vec![])))
+                warn!("Failed to fetch snippets: {}, trying cache", e);
+                
+                // Try to use cached snippets
+                let cache = self.cached_snippets.read().await;
+                if cache.is_empty() {
+                    warn!("No cached snippets available");
+                    return Ok(Some(CompletionResponse::Array(vec![])));
+                } else {
+                    debug!("Using {} cached snippets", cache.len());
+                    cache.clone()
+                }
             }
+        };
+
+        if snippets.is_empty() {
+            debug!("No snippets available");
+            return Ok(Some(CompletionResponse::Array(vec![])));
         }
+
+        let completion_items: Vec<CompletionItem> = snippets
+            .iter()
+            .map(|snippet| self.snippet_to_completion_item(snippet))
+            .collect();
+
+        info!("Returning {} completion items", completion_items.len());
+        Ok(Some(CompletionResponse::Array(completion_items)))
     }
 
     #[instrument(skip(self, params))]
@@ -404,46 +358,50 @@ impl LanguageServer for BkmrLspBackend {
     ) -> LspResult<Option<serde_json::Value>> {
         info!("Execute command: {}", params.command);
 
+        let config = self.config.read().await;
+        
         match params.command.as_str() {
             "bkmr.refresh" => {
-                // This is now a no-op since we don't cache, but kept for compatibility
-                self.client
-                    .show_message(
-                        MessageType::INFO,
-                        "No cache to refresh - snippets are fetched live",
-                    )
-                    .await;
+                info!("Refreshing snippets cache");
+                match self.fetch_snippets(None).await {
+                    Ok(snippets) => {
+                        info!("Successfully refreshed {} snippets", snippets.len());
+                    }
+                    Err(e) => {
+                        warn!("Failed to refresh snippets: {}", e);
+                    }
+                }
                 Ok(None)
             }
             "bkmr.open" => {
-                if !params.arguments.is_empty() {
-                    if let Some(id_value) = params.arguments.get(0) {
-                        if let Some(id) = id_value.as_i64() {
-                            match Command::new(&self.config.bkmr_binary)
-                                .args(&["open", &id.to_string()])
-                                .status()
-                            {
-                                Ok(_) => {
+                if let Some(id_value) = params.arguments.get(0) {
+                    if let Some(id) = id_value.as_i64() {
+                        debug!("Opening bookmark {}", id);
+                        
+                        let command_future = tokio::process::Command::new(&config.bkmr_binary)
+                            .args(&["open", &id.to_string()])
+                            .status();
+
+                        match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+                            Ok(Ok(status)) => {
+                                if status.success() {
                                     info!("Successfully opened bookmark {}", id);
-                                    self.client
-                                        .show_message(
-                                            MessageType::INFO,
-                                            &format!("Opened bookmark {}", id),
-                                        )
-                                        .await;
-                                }
-                                Err(e) => {
-                                    error!("Failed to open bookmark {}: {}", id, e);
-                                    self.client
-                                        .show_message(
-                                            MessageType::ERROR,
-                                            &format!("Failed to open bookmark {}: {}", id, e),
-                                        )
-                                        .await;
+                                } else {
+                                    warn!("bkmr open command failed for bookmark {} with exit code: {:?}", id, status.code());
                                 }
                             }
+                            Ok(Err(e)) => {
+                                error!("Failed to execute bkmr open for bookmark {}: {}", id, e);
+                            }
+                            Err(_) => {
+                                error!("bkmr open command timed out for bookmark {}", id);
+                            }
                         }
+                    } else {
+                        warn!("Invalid bookmark ID in bkmr.open command: {:?}", id_value);
                     }
+                } else {
+                    warn!("No bookmark ID provided for bkmr.open command");
                 }
                 Ok(None)
             }
@@ -457,6 +415,17 @@ impl LanguageServer for BkmrLspBackend {
                     .await;
                 Ok(None)
             }
+        }
+    }
+}
+
+// Implement Clone for background task spawning
+impl Clone for BkmrLspBackend {
+    fn clone(&self) -> Self {
+        Self {
+            client: self.client.clone(),
+            config: Arc::clone(&self.config),
+            cached_snippets: Arc::clone(&self.cached_snippets),
         }
     }
 }
