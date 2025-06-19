@@ -39,6 +39,15 @@ init:  ## init
 test:  ## tests, single-threaded
 	pushd $(pkg_src) && cargo test -- --test-threads=1
 
+.PHONY: log-plugin
+log-plugin:  ## log-plugin
+	tail -f /Users/Q187392/dev/s/public/bkmr-intellij-plugin/build/idea-sandbox/IU-2025.1.1.1/log/idea.log | grep -u completion
+
+.PHONY: log-lsp
+log-lsp:  ## log-lsp
+	#tail -f ~/bkmr-lsp.log | sed -u 's/^[^[{]*:[[:space:]]*//' | jq -C -c .
+	tail -f ~/bkmr-lsp.log | sed -u 's/^[^[{]*:[[:space:]]*//' | jq -C .
+
 ################################################################################
 # Building, Deploying \
 BUILDING:  ## ##################################################################

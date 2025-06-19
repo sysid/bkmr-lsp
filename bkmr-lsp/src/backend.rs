@@ -1,6 +1,8 @@
-use anyhow::{anyhow, Result};
+// File: bkmr-lsp/src/backend.rs - Updated completion logic with trigger characters
+
+use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
-use tower_lsp::{jsonrpc::Result as LspResult, lsp_types::*, Client, LanguageServer};
+use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
 /// Configuration for the bkmr-lsp server
@@ -45,7 +47,9 @@ impl BkmrLspBackend {
         Self {
             client,
             config: BkmrConfig::default(),
-            document_cache: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            document_cache: std::sync::Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
@@ -54,36 +58,39 @@ impl BkmrLspBackend {
     fn extract_prefix_at_position(&self, uri: &Url, position: Position) -> Option<String> {
         // For LSP servers, we typically need to track document content changes
         // For now, we'll implement a simple fallback that works with most editors
-        
+
         // Try to get document content from cache
         let cache = self.document_cache.read().ok()?;
         let content = cache.get(&uri.to_string())?;
-        
+
         let lines: Vec<&str> = content.lines().collect();
         if position.line as usize >= lines.len() {
             return None;
         }
-        
+
         let line = lines[position.line as usize];
         let char_pos = position.character as usize;
-        
+
         if char_pos > line.len() {
             return None;
         }
-        
+
         // Extract word before cursor position
         let before_cursor = &line[..char_pos];
-        
+
         // Find the start of the current word (alphanumeric + underscore)
         let word_start = before_cursor
             .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
             .map(|i| i + 1)
             .unwrap_or(0);
-        
+
         let prefix = before_cursor[word_start..].trim();
-        
-        debug!("Extracted prefix: '{}' from line: '{}' at position: {}", prefix, line, char_pos);
-        
+
+        debug!(
+            "Extracted prefix: '{}' from line: '{}' at position: {}",
+            prefix, line, char_pos
+        );
+
         if prefix.is_empty() {
             None
         } else {
@@ -97,7 +104,7 @@ impl BkmrLspBackend {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
-            "--interpolate".to_string(),  // ← ADD THIS: Always use interpolation
+            "--interpolate".to_string(), // ← ADD THIS: Always use interpolation
             "-t".to_string(),
             "_snip_".to_string(),
             "--limit".to_string(),
@@ -120,17 +127,18 @@ impl BkmrLspBackend {
             .args(&args)
             .output();
 
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                error!("Failed to execute bkmr: {}", e);
-                return Err(anyhow!("Failed to execute bkmr: {}", e));
-            }
-            Err(_) => {
-                error!("bkmr command timed out after 10 seconds");
-                return Err(anyhow!("bkmr command timed out"));
-            }
-        };
+        let output =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    error!("Failed to execute bkmr: {}", e);
+                    return Err(anyhow!("Failed to execute bkmr: {}", e));
+                }
+                Err(_) => {
+                    error!("bkmr command timed out after 10 seconds");
+                    return Err(anyhow!("bkmr command timed out"));
+                }
+            };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -151,7 +159,10 @@ impl BkmrLspBackend {
             anyhow!("Failed to parse bkmr JSON output: {}", e)
         })?;
 
-        info!("Successfully fetched {} interpolated snippets", snippets.len());
+        info!(
+            "Successfully fetched {} interpolated snippets",
+            snippets.len()
+        );
         Ok(snippets)
     }
 
@@ -193,11 +204,10 @@ impl BkmrLspBackend {
             label: label.clone(),
             kind: Some(CompletionItemKind::SNIPPET),
             // detail: Some(format!("Tags: {}", snippet.tags.join(", "))),
-            // not working, only shows snippet
-            // label_details: Some(CompletionItemLabelDetails {
-            //     detail: Some("bkmr".to_string()),
-            //     description: Some("bkmr".to_string()),
-            // }),
+            label_details: Some(CompletionItemLabelDetails {
+                detail: Some(format!("#{}", snippet.id)),
+                description: Some(snippet.description.clone()),
+            }),
             documentation: Some(Documentation::String(format!(
                 "{}",
                 if insert_text.len() > 700 {
@@ -217,8 +227,10 @@ impl BkmrLspBackend {
                 new_text: insert_text,
             })),
             data: Some(serde_json::json!({
-                "id": snippet.id,
-                "type": "bkmr_snippet"
+                "snippetId": snippet.id,
+                "snippetTitle": snippet.title,
+                "snippetDescription": snippet.description,
+                "snippetTags": snippet.tags
             })),
             ..Default::default()
         }
@@ -233,15 +245,16 @@ impl BkmrLspBackend {
             .args(&["--help"])
             .output();
 
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                return Err(anyhow!("bkmr binary not found: {}", e));
-            }
-            Err(_) => {
-                return Err(anyhow!("bkmr --help command timed out"));
-            }
-        };
+        let output =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    return Err(anyhow!("bkmr binary not found: {}", e));
+                }
+                Err(_) => {
+                    return Err(anyhow!("bkmr --help command timed out"));
+                }
+            };
 
         if !output.status.success() {
             return Err(anyhow!("bkmr binary is not working properly"));
@@ -297,7 +310,7 @@ impl LanguageServer for BkmrLspBackend {
         let result = InitializeResult {
             capabilities: ServerCapabilities {
                 text_document_sync: Some(TextDocumentSyncCapability::Kind(
-                    TextDocumentSyncKind::FULL
+                    TextDocumentSyncKind::FULL,
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
@@ -342,9 +355,9 @@ impl LanguageServer for BkmrLspBackend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
         let content = params.text_document.text;
-        
+
         debug!("Document opened: {}", uri);
-        
+
         if let Ok(mut cache) = self.document_cache.write() {
             cache.insert(uri, content);
         }
@@ -353,9 +366,9 @@ impl LanguageServer for BkmrLspBackend {
     #[instrument(skip(self, params))]
     async fn did_change(&self, params: DidChangeTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        
+
         debug!("Document changed: {}", uri);
-        
+
         if let Ok(mut cache) = self.document_cache.write() {
             for change in params.content_changes {
                 if let Some(content) = cache.get_mut(&uri) {
@@ -375,9 +388,9 @@ impl LanguageServer for BkmrLspBackend {
     #[instrument(skip(self, params))]
     async fn did_close(&self, params: DidCloseTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
-        
+
         debug!("Document closed: {}", uri);
-        
+
         if let Ok(mut cache) = self.document_cache.write() {
             cache.remove(&uri);
         }
@@ -387,22 +400,57 @@ impl LanguageServer for BkmrLspBackend {
     async fn completion(&self, params: CompletionParams) -> LspResult<Option<CompletionResponse>> {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
-        
-        debug!("Completion request for {}:{},{}", uri, position.line, position.character);
-        
+
+        debug!(
+            "Completion request for {}:{},{}",
+            uri, position.line, position.character
+        );
+
+        // Check if this is a manual trigger (Ctrl+Space) vs automatic
+        if let Some(context) = &params.context {
+            use tower_lsp::lsp_types::CompletionTriggerKind;
+
+            if context.trigger_kind == CompletionTriggerKind::INVOKED {
+                debug!("Manual completion trigger (Ctrl+Space) - proceeding");
+            } else if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER {
+                debug!("Trigger character completion - we have no trigger characters, skipping");
+                return Ok(Some(CompletionResponse::Array(vec![])));
+            } else if context.trigger_kind
+                == CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS
+            {
+                debug!("Completion for incomplete results - allowing");
+            } else {
+                debug!(
+                    "Unknown trigger kind: {:?} - skipping",
+                    context.trigger_kind
+                );
+                return Ok(Some(CompletionResponse::Array(vec![])));
+            }
+        } else {
+            // No context provided - this might be automatic completion from some clients
+            debug!("No completion context provided - treating as automatic, skipping");
+            return Ok(Some(CompletionResponse::Array(vec![])));
+        }
+
         // Extract prefix from current position
         let prefix = self.extract_prefix_at_position(uri, position);
-        
+
         debug!("Extracted prefix: {:?}", prefix);
-        
+
         match self.fetch_snippets(prefix.as_deref()).await {
             Ok(snippets) => {
                 let completion_items: Vec<CompletionItem> = snippets
                     .iter()
-                    .map(|snippet| self.snippet_to_completion_item(snippet, position, prefix.as_deref()))
+                    .map(|snippet| {
+                        self.snippet_to_completion_item(snippet, position, prefix.as_deref())
+                    })
                     .collect();
 
-                info!("Returning {} completion items for prefix: {:?}", completion_items.len(), prefix);
+                info!(
+                    "Returning {} completion items for prefix: {:?}",
+                    completion_items.len(),
+                    prefix
+                );
 
                 Ok(Some(CompletionResponse::Array(completion_items)))
             }
@@ -441,11 +489,17 @@ impl LanguageServer for BkmrLspBackend {
                 if !params.arguments.is_empty() {
                     if let Some(id_value) = params.arguments.get(0) {
                         if let Some(id) = id_value.as_i64() {
-                            let command_future = tokio::process::Command::new(&self.config.bkmr_binary)
-                                .args(&["open", &id.to_string()])
-                                .status();
+                            let command_future =
+                                tokio::process::Command::new(&self.config.bkmr_binary)
+                                    .args(&["open", &id.to_string()])
+                                    .status();
 
-                            match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+                            match tokio::time::timeout(
+                                std::time::Duration::from_secs(10),
+                                command_future,
+                            )
+                            .await
+                            {
                                 Ok(Ok(status)) => {
                                     if status.success() {
                                         info!("Successfully opened bookmark {}", id);
@@ -456,11 +510,18 @@ impl LanguageServer for BkmrLspBackend {
                                             )
                                             .await;
                                     } else {
-                                        warn!("bkmr open command failed for bookmark {} with exit code: {:?}", id, status.code());
+                                        warn!(
+                                            "bkmr open command failed for bookmark {} with exit code: {:?}",
+                                            id,
+                                            status.code()
+                                        );
                                     }
                                 }
                                 Ok(Err(e)) => {
-                                    error!("Failed to execute bkmr open for bookmark {}: {}", id, e);
+                                    error!(
+                                        "Failed to execute bkmr open for bookmark {}: {}",
+                                        id, e
+                                    );
                                     self.client
                                         .show_message(
                                             MessageType::ERROR,
