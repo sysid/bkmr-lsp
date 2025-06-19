@@ -55,11 +55,7 @@ impl BkmrLspBackend {
 
     /// Extract prefix from document at given position
     #[instrument(skip(self))]
-    fn extract_prefix_at_position(&self, uri: &Url, position: Position) -> Option<String> {
-        // For LSP servers, we typically need to track document content changes
-        // For now, we'll implement a simple fallback that works with most editors
-
-        // Try to get document content from cache
+    fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<String> {
         let cache = self.document_cache.read().ok()?;
         let content = cache.get(&uri.to_string())?;
 
@@ -78,24 +74,28 @@ impl BkmrLspBackend {
         // Extract word before cursor position
         let before_cursor = &line[..char_pos];
 
-        // Find the start of the current word (alphanumeric + underscore)
-        let word_start = before_cursor
-            .rfind(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
-            .map(|i| i + 1)
-            .unwrap_or(0);
-
-        let prefix = before_cursor[word_start..].trim();
-
-        debug!(
-            "Extracted prefix: '{}' from line: '{}' at position: {}",
-            prefix, line, char_pos
-        );
-
-        if prefix.is_empty() {
-            None
-        } else {
-            Some(prefix.to_string())
+        // Look for our trigger characters: `:snip:` or `:s:`
+        if let Some(trigger_pos) = before_cursor.rfind(":snip:") {
+            let query = before_cursor[trigger_pos + 5..].trim();
+            return if query.is_empty() { None } else { Some(query.to_string()) };
         }
+
+        if let Some(trigger_pos) = before_cursor.rfind(":s:") {
+            let query = before_cursor[trigger_pos + 3..].trim();
+            return if query.is_empty() { None } else { Some(query.to_string()) };
+        }
+
+        // Alternative: single `:` followed by letters
+        if let Some(trigger_pos) = before_cursor.rfind(':') {
+            let query = before_cursor[trigger_pos + 1..].trim();
+            // Only proceed if we have at least 1 character after `:` 
+            // and it's alphanumeric (not another special char)
+            if !query.is_empty() && query.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                return Some(query.to_string());
+            }
+        }
+
+        None
     }
 
     /// Execute bkmr command and return parsed snippets
@@ -127,18 +127,17 @@ impl BkmrLspBackend {
             .args(&args)
             .output();
 
-        let output =
-            match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => {
-                    error!("Failed to execute bkmr: {}", e);
-                    return Err(anyhow!("Failed to execute bkmr: {}", e));
-                }
-                Err(_) => {
-                    error!("bkmr command timed out after 10 seconds");
-                    return Err(anyhow!("bkmr command timed out"));
-                }
-            };
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                error!("Failed to execute bkmr: {}", e);
+                return Err(anyhow!("Failed to execute bkmr: {}", e));
+            }
+            Err(_) => {
+                error!("bkmr command timed out after 10 seconds");
+                return Err(anyhow!("bkmr command timed out"));
+            }
+        };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -159,78 +158,63 @@ impl BkmrLspBackend {
             anyhow!("Failed to parse bkmr JSON output: {}", e)
         })?;
 
-        info!(
-            "Successfully fetched {} interpolated snippets",
-            snippets.len()
-        );
+        info!("Successfully fetched {} interpolated snippets", snippets.len());
         Ok(snippets)
     }
 
-    /// Convert bkmr snippet to LSP completion item
-    /// Note: snippet.url now contains interpolated content thanks to --interpolate flag
-    fn snippet_to_completion_item(
+    /// Convert bkmr snippet to LSP completion item with trigger-aware text replacement
+    fn snippet_to_completion_item_with_trigger(
         &self,
         snippet: &BkmrSnippet,
         position: Position,
-        prefix: Option<&str>,
+        trigger_context: &str,
     ) -> CompletionItem {
-        let insert_text = snippet.url.clone(); // URL contains the actual snippet content
-        let label = snippet.title.clone(); // Title is what user sees for selection
+        let insert_text = snippet.url.clone();
+        let label = snippet.title.clone();
 
-        // Calculate the range for text replacement based on prefix
-        let replace_range = if let Some(prefix_str) = prefix {
-            if !prefix_str.is_empty() && position.character >= prefix_str.len() as u32 {
-                Range {
-                    start: Position {
-                        line: position.line,
-                        character: position.character - prefix_str.len() as u32,
-                    },
-                    end: position,
-                }
-            } else {
-                Range {
-                    start: position,
-                    end: position,
-                }
-            }
-        } else {
-            Range {
-                start: position,
-                end: position,
-            }
+        // Calculate range to replace the entire trigger sequence
+        let trigger_len = trigger_context.len() as u32;
+        let start_character = position.character.saturating_sub(trigger_len);
+        
+        // Create a valid range that IntelliJ will accept
+        let replace_range = Range {
+            start: Position {
+                line: position.line,
+                character: start_character,
+            },
+            end: Position {
+                line: position.line,
+                character: position.character,
+            },
         };
+
+        debug!("Creating completion item: label='{}', trigger_context='{}', range={:?}", 
+               label, trigger_context, replace_range);
 
         CompletionItem {
             label: label.clone(),
             kind: Some(CompletionItemKind::SNIPPET),
-            // detail: Some(format!("Tags: {}", snippet.tags.join(", "))),
-            label_details: Some(CompletionItemLabelDetails {
-                detail: Some(format!("#{}", snippet.id)),
-                description: Some(snippet.description.clone()),
-            }),
-            documentation: Some(Documentation::String(format!(
-                "{}",
-                if insert_text.len() > 700 {
-                    format!("{}...", &insert_text[..700])
+            detail: Some(format!("bkmr snippet #{}", snippet.id)),
+            documentation: Some(Documentation::String(
+                if insert_text.len() > 500 {
+                    format!("{}...", &insert_text[..500])
                 } else {
                     insert_text.clone()
                 }
-            ))),
+            )),
+            deprecated: Some(false),
+            preselect: Some(false),
+            sort_text: Some(format!("{:08}_{}", snippet.id, label)),
+            filter_text: Some(label.clone()),
             insert_text: Some(insert_text.clone()),
             insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
-            // Use filter_text to control what text is used for filtering
-            filter_text: Some(label.clone()),
-            // Use sort_text to control ordering - alphabetical by title
-            sort_text: Some(label.clone()),
             text_edit: Some(CompletionTextEdit::Edit(TextEdit {
                 range: replace_range,
                 new_text: insert_text,
             })),
             data: Some(serde_json::json!({
-                "snippetId": snippet.id,
-                "snippetTitle": snippet.title,
-                "snippetDescription": snippet.description,
-                "snippetTags": snippet.tags
+                "provider": "bkmr-lsp",
+                "snippetId": snippet.id
             })),
             ..Default::default()
         }
@@ -245,16 +229,15 @@ impl BkmrLspBackend {
             .args(&["--help"])
             .output();
 
-        let output =
-            match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => {
-                    return Err(anyhow!("bkmr binary not found: {}", e));
-                }
-                Err(_) => {
-                    return Err(anyhow!("bkmr --help command timed out"));
-                }
-            };
+        let output = match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
+            Ok(Ok(output)) => output,
+            Ok(Err(e)) => {
+                return Err(anyhow!("bkmr binary not found: {}", e));
+            }
+            Err(_) => {
+                return Err(anyhow!("bkmr --help command timed out"));
+            }
+        };
 
         if !output.status.success() {
             return Err(anyhow!("bkmr binary is not working properly"));
@@ -269,10 +252,7 @@ impl BkmrLspBackend {
 impl LanguageServer for BkmrLspBackend {
     #[instrument(skip(self, params))]
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
-        info!(
-            "Initialize request received from client: {:?}",
-            params.client_info
-        );
+        info!("Initialize request received from client: {:?}", params.client_info);
 
         // Verify bkmr is available
         if let Err(e) = self.verify_bkmr_availability().await {
@@ -314,8 +294,7 @@ impl LanguageServer for BkmrLspBackend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    // trigger_characters: Some(vec![".".to_string(), ":".to_string()]),
-                    trigger_characters: None,
+                    trigger_characters: Some(vec![":".to_string()]),
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
@@ -329,7 +308,7 @@ impl LanguageServer for BkmrLspBackend {
             ..Default::default()
         };
 
-        info!("Initialize complete, capabilities: completion and execute_command");
+        info!("Initialize complete - trigger characters: [':']");
         Ok(result)
     }
 
@@ -401,56 +380,96 @@ impl LanguageServer for BkmrLspBackend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        debug!(
-            "Completion request for {}:{},{}",
-            uri, position.line, position.character
-        );
+        debug!("Completion request for {}:{},{}", uri, position.line, position.character);
 
-        // Check if this is a manual trigger (Ctrl+Space) vs automatic
+        // Check if this was triggered by our trigger character
         if let Some(context) = &params.context {
-            use tower_lsp::lsp_types::CompletionTriggerKind;
-
-            if context.trigger_kind == CompletionTriggerKind::INVOKED {
-                debug!("Manual completion trigger (Ctrl+Space) - proceeding");
-            } else if context.trigger_kind == CompletionTriggerKind::TRIGGER_CHARACTER {
-                debug!("Trigger character completion - we have no trigger characters, skipping");
-                return Ok(Some(CompletionResponse::Array(vec![])));
-            } else if context.trigger_kind
-                == CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS
-            {
-                debug!("Completion for incomplete results - allowing");
-            } else {
-                debug!(
-                    "Unknown trigger kind: {:?} - skipping",
-                    context.trigger_kind
-                );
-                return Ok(Some(CompletionResponse::Array(vec![])));
+            match context.trigger_kind {
+                CompletionTriggerKind::TRIGGER_CHARACTER => {
+                    // This is exactly what we want - triggered by typing ':'
+                    if let Some(trigger_char) = &context.trigger_character {
+                        if trigger_char == ":" {
+                            debug!("Triggered by ':' character - proceeding with snippet completion");
+                        } else {
+                            debug!("Triggered by different character '{}' - skipping", trigger_char);
+                            return Ok(Some(CompletionResponse::Array(vec![])));
+                        }
+                    }
+                }
+                CompletionTriggerKind::INVOKED => {
+                    // Manual Ctrl+Space - check if we're in a snippet context
+                    let query = self.extract_snippet_query(uri, position);
+                    if query.is_none() {
+                        debug!("Manual trigger but no snippet context - skipping");
+                        return Ok(Some(CompletionResponse::Array(vec![])));
+                    }
+                    debug!("Manual trigger with snippet context - proceeding");
+                }
+                CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS => {
+                    debug!("Completion for incomplete results - proceeding");
+                }
+                _ => {
+                    debug!("Unknown trigger kind - skipping");
+                    return Ok(Some(CompletionResponse::Array(vec![])));
+                }
             }
         } else {
-            // No context provided - this might be automatic completion from some clients
-            debug!("No completion context provided - treating as automatic, skipping");
+            debug!("No completion context - skipping");
             return Ok(Some(CompletionResponse::Array(vec![])));
         }
 
-        // Extract prefix from current position
-        let prefix = self.extract_prefix_at_position(uri, position);
+        // Extract the query after trigger
+        let query = self.extract_snippet_query(uri, position);
+        debug!("Extracted snippet query: {:?}", query);
 
-        debug!("Extracted prefix: {:?}", prefix);
+        // Determine what text to replace (for proper text editing)
+        // Extract data from cache and drop the guard before await
+        let trigger_context = {
+            let cache = self.document_cache.read().unwrap();
+            let content = cache.get(&uri.to_string()).map(|s| &**s).unwrap_or("");
+            let lines: Vec<&str> = content.lines().collect();
+            let line = if (position.line as usize) < lines.len() {
+                lines[position.line as usize]
+            } else {
+                ""
+            };
+            let before_cursor = &line[..std::cmp::min(position.character as usize, line.len())];
 
-        match self.fetch_snippets(prefix.as_deref()).await {
+            // Find the trigger context for text replacement
+            if let Some(pos) = before_cursor.rfind(":snip:") {
+                before_cursor[pos..].to_string()
+            } else if let Some(pos) = before_cursor.rfind(":s:") {
+                before_cursor[pos..].to_string()
+            } else if let Some(pos) = before_cursor.rfind(':') {
+                before_cursor[pos..].to_string()
+            } else {
+                String::new()
+            }
+        }; // Guard is dropped here
+
+        debug!("Trigger context: '{}'", trigger_context);
+
+        match self.fetch_snippets(query.as_deref()).await {
             Ok(snippets) => {
-                let completion_items: Vec<CompletionItem> = snippets
+                let mut completion_items: Vec<CompletionItem> = snippets
                     .iter()
                     .map(|snippet| {
-                        self.snippet_to_completion_item(snippet, position, prefix.as_deref())
+                        self.snippet_to_completion_item_with_trigger(
+                            snippet,
+                            position,
+                            &trigger_context,
+                        )
                     })
                     .collect();
 
-                info!(
-                    "Returning {} completion items for prefix: {:?}",
-                    completion_items.len(),
-                    prefix
-                );
+                // Sort alphabetically by label
+                completion_items.sort_by(|a, b| a.label.cmp(&b.label));
+
+                info!("Returning {} completion items for query: {:?}", completion_items.len(), query);
+
+                for (i, item) in completion_items.iter().enumerate() {
+                    debug!("Item {}: label='{}', sort_text={:?}", i, item.label, item.sort_text);
+                }
 
                 Ok(Some(CompletionResponse::Array(completion_items)))
             }
