@@ -166,30 +166,14 @@ impl BkmrLspBackend {
     fn snippet_to_completion_item_with_trigger(
         &self,
         snippet: &BkmrSnippet,
-        position: Position,
-        trigger_context: &str,
+        _position: Position,
+        _trigger_context: &str,
     ) -> CompletionItem {
         let insert_text = snippet.url.clone();
         let label = snippet.title.clone();
 
-        // Calculate range to replace the entire trigger sequence
-        let trigger_len = trigger_context.len() as u32;
-        let start_character = position.character.saturating_sub(trigger_len);
-        
-        // Create a valid range that IntelliJ will accept
-        let replace_range = Range {
-            start: Position {
-                line: position.line,
-                character: start_character,
-            },
-            end: Position {
-                line: position.line,
-                character: position.character,
-            },
-        };
-
-        debug!("Creating completion item: label='{}', trigger_context='{}', range={:?}", 
-               label, trigger_context, replace_range);
+        debug!("Creating completion item: label='{}', insert_text length={}", 
+               label, insert_text.len());
 
         CompletionItem {
             label: label.clone(),
@@ -208,10 +192,8 @@ impl BkmrLspBackend {
             filter_text: Some(label.clone()),
             insert_text: Some(insert_text.clone()),
             insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
-            text_edit: Some(CompletionTextEdit::Edit(TextEdit {
-                range: replace_range,
-                new_text: insert_text,
-            })),
+            // Remove text_edit to let IntelliJ handle the replacement
+            text_edit: None,
             data: Some(serde_json::json!({
                 "provider": "bkmr-lsp",
                 "snippetId": snippet.id
