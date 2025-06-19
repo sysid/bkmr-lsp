@@ -32,8 +32,8 @@ ADMIN::  ## ##################################################################
 
 .PHONY: init
 init:  ## init
-	@rm -fr ~/xxx
-	mkdir -p ~/xxx
+	@rm -fv ~/bkmr-lsp.log
+	@rm -fv /Users/Q187392/dev/s/public/bkmr-intellij-plugin/build/idea-sandbox/IU-2025.1.1.1/log/idea.log
 
 .PHONY: test
 test:  ## tests, single-threaded
@@ -45,8 +45,8 @@ log-plugin:  ## log-plugin
 
 .PHONY: log-lsp
 log-lsp:  ## log-lsp
-	#tail -f ~/bkmr-lsp.log | sed -u 's/^[^[{]*:[[:space:]]*//' | jq -C -c .
-	tail -f ~/bkmr-lsp.log | sed -u 's/^[^[{]*:[[:space:]]*//' | jq -C .
+	tail -f ~/bkmr-lsp.log | sed -u 's/^[^[{]*:[[:space:]]*//' | jq -C -c .
+	#tail -f ~/bkmr-lsp.log | sed -u 's/^[^[{]*:[[:space:]]*//' | jq -C .
 
 ################################################################################
 # Building, Deploying \

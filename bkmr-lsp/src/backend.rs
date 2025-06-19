@@ -77,20 +77,32 @@ impl BkmrLspBackend {
         // Look for our trigger characters: `:snip:` or `:s:`
         if let Some(trigger_pos) = before_cursor.rfind(":snip:") {
             let query = before_cursor[trigger_pos + 5..].trim();
-            return if query.is_empty() { None } else { Some(query.to_string()) };
+            return if query.is_empty() {
+                None
+            } else {
+                Some(query.to_string())
+            };
         }
 
         if let Some(trigger_pos) = before_cursor.rfind(":s:") {
             let query = before_cursor[trigger_pos + 3..].trim();
-            return if query.is_empty() { None } else { Some(query.to_string()) };
+            return if query.is_empty() {
+                None
+            } else {
+                Some(query.to_string())
+            };
         }
 
         // Alternative: single `:` followed by letters
         if let Some(trigger_pos) = before_cursor.rfind(':') {
             let query = before_cursor[trigger_pos + 1..].trim();
-            // Only proceed if we have at least 1 character after `:` 
+            // Only proceed if we have at least 1 character after `:`
             // and it's alphanumeric (not another special char)
-            if !query.is_empty() && query.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+            if !query.is_empty()
+                && query
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
                 return Some(query.to_string());
             }
         }
@@ -127,17 +139,18 @@ impl BkmrLspBackend {
             .args(&args)
             .output();
 
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                error!("Failed to execute bkmr: {}", e);
-                return Err(anyhow!("Failed to execute bkmr: {}", e));
-            }
-            Err(_) => {
-                error!("bkmr command timed out after 10 seconds");
-                return Err(anyhow!("bkmr command timed out"));
-            }
-        };
+        let output =
+            match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    error!("Failed to execute bkmr: {}", e);
+                    return Err(anyhow!("Failed to execute bkmr: {}", e));
+                }
+                Err(_) => {
+                    error!("bkmr command timed out after 10 seconds");
+                    return Err(anyhow!("bkmr command timed out"));
+                }
+            };
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
@@ -158,7 +171,10 @@ impl BkmrLspBackend {
             anyhow!("Failed to parse bkmr JSON output: {}", e)
         })?;
 
-        info!("Successfully fetched {} interpolated snippets", snippets.len());
+        info!(
+            "Successfully fetched {} interpolated snippets",
+            snippets.len()
+        );
         Ok(snippets)
     }
 
@@ -167,37 +183,44 @@ impl BkmrLspBackend {
         &self,
         snippet: &BkmrSnippet,
         _position: Position,
-        _trigger_context: &str,
+        query: &str,
     ) -> CompletionItem {
-        let insert_text = snippet.url.clone();
+        let original_insert_text = snippet.url.clone();
         let label = snippet.title.clone();
 
-        debug!("Creating completion item: label='{}', insert_text length={}", 
-               label, insert_text.len());
+        // Check if insertText starts with query (case insensitive)
+        let insert_matches = original_insert_text
+            .to_lowercase()
+            .starts_with(&query.to_lowercase());
+
+        // If insertText doesn't match query, prefix it with the query (vim lsp workaround)
+        let insert_text = if !insert_matches && !query.is_empty() {
+            format!("{} {}", query, original_insert_text)
+        } else {
+            original_insert_text
+        };
+
+        debug!(
+            "Completion item: query='{}', label='{}', insertText='{}' (fixed={})",
+            query,
+            label,
+            insert_text.chars().take(20).collect::<String>(),
+            !insert_matches
+        );
 
         CompletionItem {
             label: label.clone(),
-            kind: Some(CompletionItemKind::SNIPPET),
-            detail: Some(format!("bkmr snippet #{}", snippet.id)),
-            documentation: Some(Documentation::String(
-                if insert_text.len() > 500 {
-                    format!("{}...", &insert_text[..500])
-                } else {
-                    insert_text.clone()
-                }
-            )),
-            deprecated: Some(false),
-            preselect: Some(false),
-            sort_text: Some(format!("{:08}_{}", snippet.id, label)),
-            filter_text: Some(label.clone()),
-            insert_text: Some(insert_text.clone()),
-            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
-            // Remove text_edit to let IntelliJ handle the replacement
-            text_edit: None,
-            data: Some(serde_json::json!({
-                "provider": "bkmr-lsp",
-                "snippetId": snippet.id
+            kind: Some(CompletionItemKind::TEXT),
+            // detail: Some(format!("bkmr #{}", snippet.id)),
+            documentation: Some(Documentation::String(if insert_text.len() > 500 {
+                format!("{}...", &insert_text[..500])
+            } else {
+                insert_text.clone()
             })),
+            insert_text: Some(insert_text),
+            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+            filter_text: Some(label.clone()),
+            sort_text: Some(label.clone()),
             ..Default::default()
         }
     }
@@ -211,15 +234,16 @@ impl BkmrLspBackend {
             .args(&["--help"])
             .output();
 
-        let output = match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
-            Ok(Ok(output)) => output,
-            Ok(Err(e)) => {
-                return Err(anyhow!("bkmr binary not found: {}", e));
-            }
-            Err(_) => {
-                return Err(anyhow!("bkmr --help command timed out"));
-            }
-        };
+        let output =
+            match tokio::time::timeout(std::time::Duration::from_secs(5), command_future).await {
+                Ok(Ok(output)) => output,
+                Ok(Err(e)) => {
+                    return Err(anyhow!("bkmr binary not found: {}", e));
+                }
+                Err(_) => {
+                    return Err(anyhow!("bkmr --help command timed out"));
+                }
+            };
 
         if !output.status.success() {
             return Err(anyhow!("bkmr binary is not working properly"));
@@ -234,7 +258,10 @@ impl BkmrLspBackend {
 impl LanguageServer for BkmrLspBackend {
     #[instrument(skip(self, params))]
     async fn initialize(&self, params: InitializeParams) -> LspResult<InitializeResult> {
-        info!("Initialize request received from client: {:?}", params.client_info);
+        info!(
+            "Initialize request received from client: {:?}",
+            params.client_info
+        );
 
         // Verify bkmr is available
         if let Err(e) = self.verify_bkmr_availability().await {
@@ -362,7 +389,10 @@ impl LanguageServer for BkmrLspBackend {
         let uri = &params.text_document_position.text_document.uri;
         let position = params.text_document_position.position;
 
-        debug!("Completion request for {}:{},{}", uri, position.line, position.character);
+        debug!(
+            "Completion request for {}:{},{}",
+            uri, position.line, position.character
+        );
 
         // Check if this was triggered by our trigger character
         if let Some(context) = &params.context {
@@ -371,9 +401,14 @@ impl LanguageServer for BkmrLspBackend {
                     // This is exactly what we want - triggered by typing ':'
                     if let Some(trigger_char) = &context.trigger_character {
                         if trigger_char == ":" {
-                            debug!("Triggered by ':' character - proceeding with snippet completion");
+                            debug!(
+                                "Triggered by ':' character - proceeding with snippet completion"
+                            );
                         } else {
-                            debug!("Triggered by different character '{}' - skipping", trigger_char);
+                            debug!(
+                                "Triggered by different character '{}' - skipping",
+                                trigger_char
+                            );
                             return Ok(Some(CompletionResponse::Array(vec![])));
                         }
                     }
@@ -433,24 +468,27 @@ impl LanguageServer for BkmrLspBackend {
 
         match self.fetch_snippets(query.as_deref()).await {
             Ok(snippets) => {
-                let mut completion_items: Vec<CompletionItem> = snippets
+                let query_str = query.as_deref().unwrap_or(""); // Clean query: "aws", not ":aws"
+                let completion_items: Vec<CompletionItem> = snippets
                     .iter()
                     .map(|snippet| {
                         self.snippet_to_completion_item_with_trigger(
-                            snippet,
-                            position,
-                            &trigger_context,
+                            snippet, position, query_str, // Pass "aws", not ":aws"
                         )
                     })
                     .collect();
 
-                // Sort alphabetically by label
-                completion_items.sort_by(|a, b| a.label.cmp(&b.label));
-
-                info!("Returning {} completion items for query: {:?}", completion_items.len(), query);
+                info!(
+                    "Returning {} completion items for query: {:?}",
+                    completion_items.len(),
+                    query
+                );
 
                 for (i, item) in completion_items.iter().enumerate() {
-                    debug!("Item {}: label='{}', sort_text={:?}", i, item.label, item.sort_text);
+                    debug!(
+                        "Item {}: label='{}', sort_text={:?}",
+                        i, item.label, item.sort_text
+                    );
                 }
 
                 Ok(Some(CompletionResponse::Array(completion_items)))
