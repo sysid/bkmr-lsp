@@ -71,46 +71,13 @@ impl BkmrLspBackend {
             return None;
         }
 
-        // Extract word before cursor position
         let before_cursor = &line[..char_pos];
 
-        // Look for our trigger patterns with immediate prefix matching
-        if let Some(trigger_pos) = before_cursor.rfind(":snip:") {
-            let after_trigger = &before_cursor[trigger_pos + 5..];
-            // Only proceed if there's no whitespace and we have alphanumeric chars
-            if !after_trigger.is_empty() 
-                && !after_trigger.starts_with(char::is_whitespace)
-                && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                return Some(after_trigger.to_string());
-            }
-            // If we just typed ":snip:" return empty query for all snippets
-            if after_trigger.is_empty() {
-                return Some(String::new());
-            }
-            return None;
-        }
-
-        if let Some(trigger_pos) = before_cursor.rfind(":s:") {
-            let after_trigger = &before_cursor[trigger_pos + 3..];
-            // Only proceed if there's no whitespace and we have alphanumeric chars
-            if !after_trigger.is_empty() 
-                && !after_trigger.starts_with(char::is_whitespace)
-                && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
-                return Some(after_trigger.to_string());
-            }
-            // If we just typed ":s:" return empty query for all snippets
-            if after_trigger.is_empty() {
-                return Some(String::new());
-            }
-            return None;
-        }
-
-        // Single `:` followed immediately by letters (no spaces)
+        // Find the last ':' and check if it's a valid snippet trigger
         if let Some(trigger_pos) = before_cursor.rfind(':') {
             let after_trigger = &before_cursor[trigger_pos + 1..];
             
             // Check if this might be part of a URL, time, or other non-snippet context
-            // Look at character before ':' to avoid false positives
             if trigger_pos > 0 {
                 let char_before = before_cursor.chars().nth(trigger_pos - 1);
                 if let Some(prev_char) = char_before {
@@ -122,13 +89,10 @@ impl BkmrLspBackend {
             }
             
             // Only proceed if:
-            // 1. We have content after ':'
-            // 2. No whitespace immediately after ':'
-            // 3. All characters are alphanumeric/underscore/dash
-            // 4. At least 1 character (to avoid triggering on just ':')
-            if !after_trigger.is_empty()
-                && !after_trigger.starts_with(char::is_whitespace)
-                && after_trigger.len() >= 1
+            // 1. No whitespace immediately after ':'
+            // 2. All characters are valid identifier chars
+            // 3. We either have content or just typed ':'
+            if !after_trigger.starts_with(char::is_whitespace)
                 && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
                 return Some(after_trigger.to_string());
             }
