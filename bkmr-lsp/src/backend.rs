@@ -74,36 +74,63 @@ impl BkmrLspBackend {
         // Extract word before cursor position
         let before_cursor = &line[..char_pos];
 
-        // Look for our trigger characters: `:snip:` or `:s:`
+        // Look for our trigger patterns with immediate prefix matching
         if let Some(trigger_pos) = before_cursor.rfind(":snip:") {
-            let query = before_cursor[trigger_pos + 5..].trim();
-            return if query.is_empty() {
-                None
-            } else {
-                Some(query.to_string())
-            };
+            let after_trigger = &before_cursor[trigger_pos + 5..];
+            // Only proceed if there's no whitespace and we have alphanumeric chars
+            if !after_trigger.is_empty() 
+                && !after_trigger.starts_with(char::is_whitespace)
+                && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                return Some(after_trigger.to_string());
+            }
+            // If we just typed ":snip:" return empty query for all snippets
+            if after_trigger.is_empty() {
+                return Some(String::new());
+            }
+            return None;
         }
 
         if let Some(trigger_pos) = before_cursor.rfind(":s:") {
-            let query = before_cursor[trigger_pos + 3..].trim();
-            return if query.is_empty() {
-                None
-            } else {
-                Some(query.to_string())
-            };
+            let after_trigger = &before_cursor[trigger_pos + 3..];
+            // Only proceed if there's no whitespace and we have alphanumeric chars
+            if !after_trigger.is_empty() 
+                && !after_trigger.starts_with(char::is_whitespace)
+                && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                return Some(after_trigger.to_string());
+            }
+            // If we just typed ":s:" return empty query for all snippets
+            if after_trigger.is_empty() {
+                return Some(String::new());
+            }
+            return None;
         }
 
-        // Alternative: single `:` followed by letters
+        // Single `:` followed immediately by letters (no spaces)
         if let Some(trigger_pos) = before_cursor.rfind(':') {
-            let query = before_cursor[trigger_pos + 1..].trim();
-            // Only proceed if we have at least 1 character after `:`
-            // and it's alphanumeric (not another special char)
-            if !query.is_empty()
-                && query
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-            {
-                return Some(query.to_string());
+            let after_trigger = &before_cursor[trigger_pos + 1..];
+            
+            // Check if this might be part of a URL, time, or other non-snippet context
+            // Look at character before ':' to avoid false positives
+            if trigger_pos > 0 {
+                let char_before = before_cursor.chars().nth(trigger_pos - 1);
+                if let Some(prev_char) = char_before {
+                    // Skip if it looks like URL (http:), time (12:30), or path (C:\)
+                    if prev_char.is_alphanumeric() || prev_char == 'p' || prev_char == 't' {
+                        return None;
+                    }
+                }
+            }
+            
+            // Only proceed if:
+            // 1. We have content after ':'
+            // 2. No whitespace immediately after ':'
+            // 3. All characters are alphanumeric/underscore/dash
+            // 4. At least 1 character (to avoid triggering on just ':')
+            if !after_trigger.is_empty()
+                && !after_trigger.starts_with(char::is_whitespace)
+                && after_trigger.len() >= 1
+                && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                return Some(after_trigger.to_string());
             }
         }
 
