@@ -2,6 +2,7 @@
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
+use std::path::Path;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
@@ -76,7 +77,7 @@ impl BkmrLspBackend {
         // Find the last ':' and check if it's a valid snippet trigger
         if let Some(trigger_pos) = before_cursor.rfind(':') {
             let after_trigger = &before_cursor[trigger_pos + 1..];
-            
+
             // Check if this might be part of a URL, time, or other non-snippet context
             if trigger_pos > 0 {
                 let char_before = before_cursor.chars().nth(trigger_pos - 1);
@@ -87,13 +88,16 @@ impl BkmrLspBackend {
                     }
                 }
             }
-            
+
             // Only proceed if:
             // 1. No whitespace immediately after ':'
             // 2. All characters are valid identifier chars
             // 3. We either have content or just typed ':'
             if !after_trigger.starts_with(char::is_whitespace)
-                && after_trigger.chars().all(|c| c.is_alphanumeric() || c == '_' || c == '-') {
+                && after_trigger
+                    .chars()
+                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
+            {
                 return Some(after_trigger.to_string());
             }
         }
@@ -222,7 +226,7 @@ impl BkmrLspBackend {
         debug!("Verifying bkmr availability");
 
         let command_future = tokio::process::Command::new(&self.config.bkmr_binary)
-            .args(&["--help"])
+            .args(["--help"])
             .output();
 
         let output =
@@ -242,6 +246,119 @@ impl BkmrLspBackend {
 
         info!("bkmr binary verified successfully");
         Ok(())
+    }
+
+    /// Determine the appropriate comment syntax for a file based on its extension
+    fn get_comment_syntax(&self, file_path: &str) -> &'static str {
+        let path = Path::new(file_path);
+        let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
+
+        match extension {
+            // C-style languages
+            "rs" | "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "java" | "js" | "ts" | "jsx"
+            | "tsx" | "cs" | "go" | "swift" | "kt" | "scala" | "dart" => "//",
+            // Shell-style languages
+            "sh" | "bash" | "zsh" | "fish" | "py" | "rb" | "pl" | "r" | "yaml" | "yml" | "toml"
+            | "cfg" | "ini" | "properties" => "#",
+            // HTML/XML
+            "html" | "htm" | "xml" | "xhtml" | "svg" => "<!--",
+            // CSS
+            "css" | "scss" | "sass" | "less" => "/*",
+            // SQL
+            "sql" => "--",
+            // Lua
+            "lua" => "--",
+            // Haskell
+            "hs" => "--",
+            // Lisp family
+            "lisp" | "cl" | "clj" | "cljs" | "scm" | "rkt" => ";",
+            // VimScript
+            "vim" => "\"",
+            // Batch files
+            "bat" | "cmd" => "REM",
+            // PowerShell
+            "ps1" | "psm1" | "psd1" => "#",
+            // LaTeX
+            "tex" | "latex" => "%",
+            // Fortran
+            "f" | "f77" | "f90" | "f95" | "f03" | "f08" => "!",
+            // MATLAB
+            "m" => "%",
+            // Default to hash for unknown file types
+            _ => "#",
+        }
+    }
+
+    /// Get the relative path from project root
+    fn get_relative_path(&self, file_uri: &str) -> String {
+        let url = match Url::parse(file_uri) {
+            Ok(u) => u,
+            Err(_) => return file_uri.to_string(),
+        };
+
+        let file_path = match url.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return file_uri.to_string(),
+        };
+
+        // Try to find a project root by looking for common indicators
+        let mut current = file_path.as_path();
+        while let Some(parent) = current.parent() {
+            // Check for common project root indicators
+            if parent.join("Cargo.toml").exists()
+                || parent.join("package.json").exists()
+                || parent.join("pom.xml").exists()
+                || parent.join("build.gradle").exists()
+                || parent.join("build.gradle.kts").exists()
+                || parent.join("Makefile").exists()
+                || parent.join(".git").exists()
+            {
+                // Found project root, return relative path
+                if let Ok(rel_path) = file_path.strip_prefix(parent) {
+                    return rel_path.to_string_lossy().to_string();
+                }
+                break;
+            }
+            current = parent;
+        }
+
+        // Fall back to just the filename if no project root found
+        file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| file_uri.to_string())
+    }
+
+    /// Insert filepath comment at the beginning of the file
+    #[instrument(skip(self))]
+    async fn insert_filepath_comment(&self, file_uri: &str) -> Result<Vec<TextEdit>> {
+        let relative_path = self.get_relative_path(file_uri);
+        let comment_syntax = self.get_comment_syntax(file_uri);
+
+        let comment_text = match comment_syntax {
+            "<!--" => format!("<!-- {} -->\n", relative_path),
+            "/*" => format!("/* {} */\n", relative_path),
+            _ => format!("{} {}\n", comment_syntax, relative_path),
+        };
+
+        debug!("Inserting filepath comment: {}", comment_text.trim());
+
+        // Create a text edit to insert at the beginning of the file
+        let edit = TextEdit {
+            range: Range {
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
+            },
+            new_text: comment_text,
+        };
+
+        Ok(vec![edit])
     }
 }
 
@@ -298,6 +415,10 @@ impl LanguageServer for BkmrLspBackend {
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
+                }),
+                execute_command_provider: Some(ExecuteCommandOptions {
+                    commands: vec!["bkmr.insertFilepathComment".to_string()],
+                    work_done_progress_options: WorkDoneProgressOptions::default(),
                 }),
                 ..Default::default()
             },
@@ -493,4 +614,97 @@ impl LanguageServer for BkmrLspBackend {
         }
     }
 
+    #[instrument(skip(self, params))]
+    async fn execute_command(
+        &self,
+        params: ExecuteCommandParams,
+    ) -> LspResult<Option<serde_json::Value>> {
+        debug!("Execute command request: {}", params.command);
+
+        match params.command.as_str() {
+            "bkmr.insertFilepathComment" => {
+                // Extract file URI from arguments
+                if !params.arguments.is_empty() {
+                    if let Some(first_arg) = params.arguments.first() {
+                        if let Ok(uri_str) = serde_json::from_value::<String>(first_arg.clone()) {
+                            match self.insert_filepath_comment(&uri_str).await {
+                                Ok(edits) => {
+                                    // Apply the text edits to the document
+                                    let workspace_edit = WorkspaceEdit {
+                                        changes: Some({
+                                            let mut changes = std::collections::HashMap::new();
+                                            if let Ok(uri) = Url::parse(&uri_str) {
+                                                changes.insert(uri, edits);
+                                            }
+                                            changes
+                                        }),
+                                        document_changes: None,
+                                        change_annotations: None,
+                                    };
+
+                                    // Request client to apply the edit
+                                    match self.client.apply_edit(workspace_edit).await {
+                                        Ok(response) => {
+                                            if response.applied {
+                                                info!("Successfully inserted filepath comment");
+                                                self.client
+                                                    .log_message(
+                                                        MessageType::INFO,
+                                                        "Filepath comment inserted successfully",
+                                                    )
+                                                    .await;
+                                            } else {
+                                                warn!("Client rejected the edit");
+                                                self.client
+                                                    .log_message(
+                                                        MessageType::WARNING,
+                                                        "Failed to apply filepath comment edit",
+                                                    )
+                                                    .await;
+                                            }
+                                        }
+                                        Err(e) => {
+                                            error!("Failed to apply edit: {}", e);
+                                            self.client
+                                                .log_message(
+                                                    MessageType::ERROR,
+                                                    &format!("Failed to apply edit: {}", e),
+                                                )
+                                                .await;
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to create filepath comment: {}", e);
+                                    self.client
+                                        .log_message(
+                                            MessageType::ERROR,
+                                            &format!("Failed to create filepath comment: {}", e),
+                                        )
+                                        .await;
+                                }
+                            }
+                        } else {
+                            error!("Invalid argument format for insertFilepathComment");
+                        }
+                    } else {
+                        error!("No arguments provided for insertFilepathComment command");
+                    }
+                } else {
+                    error!("No arguments provided for insertFilepathComment command");
+                }
+            }
+            _ => {
+                error!("Unknown command: {}", params.command);
+                self.client
+                    .log_message(
+                        MessageType::ERROR,
+                        &format!("Unknown command: {}", params.command),
+                    )
+                    .await;
+            }
+        }
+
+        Ok(None)
+    }
 }

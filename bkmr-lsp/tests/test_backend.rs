@@ -7,7 +7,7 @@ async fn test_config_defaults() {
     assert_eq!(config.max_completions, 50);
 }
 
-#[tokio::test] 
+#[tokio::test]
 async fn test_snippet_deserialization() {
     let json = r#"{
         "id": 123,
@@ -17,7 +17,7 @@ async fn test_snippet_deserialization() {
         "tags": ["javascript", "test"],
         "access_count": 5
     }"#;
-    
+
     let snippet: BkmrSnippet = serde_json::from_str(json).unwrap();
     assert_eq!(snippet.id, 123);
     assert_eq!(snippet.title, "Test Snippet");
@@ -36,7 +36,7 @@ async fn test_snippet_default_access_count() {
         "description": "A rust snippet",
         "tags": ["rust"]
     }"#;
-    
+
     let snippet: BkmrSnippet = serde_json::from_str(json).unwrap();
     assert_eq!(snippet.access_count, 0); // Default value
 }

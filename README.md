@@ -4,7 +4,7 @@ Language Server Protocol (LSP) implementation for [bkmr](https://github.com/sysi
 
 ## Overview
 
-bkmr-lsp provides trigger-based snippet completion for bkmr snippets in any LSP-compatible editor. Type `:` followed by letters to get snippet completions. Snippets are automatically interpolated, delivering processed content rather than raw templates.
+bkmr-lsp provides trigger-based snippet completion for bkmr snippets in any LSP-compatible editor. Type `:` followed by letters to get snippet completions. Snippets are automatically interpolated, delivering processed content rather than raw templates. Additionally, it provides LSP commands for filepath comment insertion with automatic language detection.
 
 ## Requirements
 
@@ -118,6 +118,32 @@ Use prefixes after `:` to filter completions:
 - Type `:aws` to show AWS-related snippets
 - Partial matches filter by snippet titles
 
+### LSP Commands
+
+The server provides LSP commands for additional functionality:
+
+#### `bkmr.insertFilepathComment`
+Insert the relative filepath as a comment at the beginning of the file.
+
+**Features:**
+- **Smart Comment Detection**: Automatically detects correct comment syntax for 20+ file types
+- **Project-Relative Paths**: Generates relative paths from project root (searches for `Cargo.toml`, `package.json`, `.git`, etc.)
+- **Language Support**: 
+  - C-style (`//`): Rust, Java, JavaScript, TypeScript, C++, Go, Swift, Kotlin, Scala, Dart
+  - Shell-style (`#`): Python, Shell, YAML, TOML, Ruby, Perl, R, Config files
+  - HTML/XML (`<!-- -->`): HTML, XML, SVG
+  - CSS (`/* */`): CSS, SCSS, Sass, Less
+  - SQL (`--`): SQL files
+  - And many more (Lua, Haskell, Lisp, VimScript, Batch, PowerShell, LaTeX, Fortran, MATLAB)
+
+**Example:**
+```rust
+// src/backend.rs
+use tower_lsp::LanguageServer;
+```
+
+**Usage in LSP Clients:**
+Most LSP clients can execute this command programmatically. For IntelliJ Platform IDEs, use the [bkmr-intellij-plugin](../bkmr-intellij-plugin) which provides UI integration.
 
 
 ## Troubleshooting
@@ -171,6 +197,7 @@ RUST_LOG=debug bkmr-lsp 2>lsp.log
   - Text document completion with `:` trigger character
   - Template interpolation
   - Live snippet fetching
+  - LSP commands for filepath comment insertion
 
 ## Contributing
 

@@ -1,60 +1,67 @@
-use tower_lsp::{LspService, Server};
 use bkmr_lsp::BkmrLspBackend;
-use tracing_subscriber::EnvFilter;
 use std::panic;
+use tower_lsp::{LspService, Server};
+use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() {
     // Set up panic hook to log panics instead of just exiting
     panic::set_hook(Box::new(|panic_info| {
         eprintln!("PANIC in bkmr-lsp: {}", panic_info);
-        
+
         // Try to log to tracing if available
         if let Some(location) = panic_info.location() {
-            eprintln!("Panic occurred in file '{}' at line {}", location.file(), location.line());
+            eprintln!(
+                "Panic occurred in file '{}' at line {}",
+                location.file(),
+                location.line()
+            );
         }
-        
+
         // Print payload if available
         if let Some(payload) = panic_info.payload().downcast_ref::<&str>() {
             eprintln!("Panic payload: {}", payload);
         } else if let Some(payload) = panic_info.payload().downcast_ref::<String>() {
             eprintln!("Panic payload: {}", payload);
         }
-        
+
         std::process::exit(1);
     }));
 
     // Initialize logging with fallback if it fails
     let result = init_logging();
     if let Err(e) = result {
-        eprintln!("Failed to initialize logging: {}, continuing without structured logging", e);
+        eprintln!(
+            "Failed to initialize logging: {}, continuing without structured logging",
+            e
+        );
     }
 
     tracing::info!("Starting bkmr-lsp server v{}", env!("CARGO_PKG_VERSION"));
-    
+
     // Validate environment before starting
     if let Err(e) = validate_environment().await {
         tracing::error!("Environment validation failed: {}", e);
         eprintln!("Environment validation failed: {}", e);
         std::process::exit(1);
     }
-    
+
     // Set up the LSP service with error handling
     let (service, socket) = LspService::new(|client| {
         tracing::debug!("Creating new LSP backend instance");
         BkmrLspBackend::new(client)
     });
-    
+
     tracing::info!("LSP service created, starting server on stdin/stdout");
-    
+
     // Create server with stdin/stdout
     let stdin = tokio::io::stdin();
     let stdout = tokio::io::stdout();
-    
+
     // Start the server - this method returns () and only exits on error via panic
     tracing::info!("Starting LSP server loop");
     Server::new(stdin, stdout, socket).serve(service).await;
-    
+
     // If we reach here, the server has shut down gracefully
     tracing::info!("Server shutdown gracefully");
 }
@@ -68,7 +75,7 @@ fn init_logging() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
-        .with_ansi(false)  // Disable color codes for LSP compatibility
+        .with_ansi(false) // Disable color codes for LSP compatibility
         .with_target(false) // Reduce noise in LSP logs
         .with_env_filter(filter)
         .try_init()?;
@@ -86,10 +93,10 @@ async fn validate_environment() -> Result<(), Box<dyn std::error::Error + Send +
     }
 
     // Test basic async functionality
-    tokio::time::timeout(
-        std::time::Duration::from_millis(100), 
-        async { tokio::task::yield_now().await }
-    ).await?;
+    tokio::time::timeout(std::time::Duration::from_millis(100), async {
+        tokio::task::yield_now().await
+    })
+    .await?;
 
     Ok(())
 }

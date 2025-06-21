@@ -10,7 +10,7 @@ async fn test_bkmr_interpolation_integration() {
 
     // Check if bkmr is available
     let bkmr_check = Command::new("bkmr")
-        .args(&["search", "--help"])
+        .args(["search", "--help"])
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
@@ -23,7 +23,7 @@ async fn test_bkmr_interpolation_integration() {
 
     // Test that bkmr supports --interpolate flag
     let interpolate_support = Command::new("bkmr")
-        .args(&["search", "--help"])
+        .args(["search", "--help"])
         .output()
         .await
         .expect("Failed to run bkmr");
@@ -36,7 +36,7 @@ async fn test_bkmr_interpolation_integration() {
 
     // Test the actual command that bkmr-lsp will use
     let test_command = Command::new("bkmr")
-        .args(&[
+        .args([
             "search",
             "--json",
             "--interpolate",
