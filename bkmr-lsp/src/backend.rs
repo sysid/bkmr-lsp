@@ -299,10 +299,6 @@ impl LanguageServer for BkmrLspBackend {
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
                 }),
-                execute_command_provider: Some(ExecuteCommandOptions {
-                    commands: vec!["bkmr.open".to_string(), "bkmr.refresh".to_string()],
-                    work_done_progress_options: WorkDoneProgressOptions::default(),
-                }),
                 ..Default::default()
             },
             ..Default::default()
@@ -497,93 +493,4 @@ impl LanguageServer for BkmrLspBackend {
         }
     }
 
-    #[instrument(skip(self, params))]
-    async fn execute_command(
-        &self,
-        params: ExecuteCommandParams,
-    ) -> LspResult<Option<serde_json::Value>> {
-        info!("Execute command: {}", params.command);
-
-        match params.command.as_str() {
-            "bkmr.refresh" => {
-                // This is now a no-op since we don't cache, but kept for compatibility
-                self.client
-                    .show_message(
-                        MessageType::INFO,
-                        "No cache to refresh - snippets are fetched live",
-                    )
-                    .await;
-                Ok(None)
-            }
-            "bkmr.open" => {
-                if !params.arguments.is_empty() {
-                    if let Some(id_value) = params.arguments.get(0) {
-                        if let Some(id) = id_value.as_i64() {
-                            let command_future =
-                                tokio::process::Command::new(&self.config.bkmr_binary)
-                                    .args(&["open", &id.to_string()])
-                                    .status();
-
-                            match tokio::time::timeout(
-                                std::time::Duration::from_secs(10),
-                                command_future,
-                            )
-                            .await
-                            {
-                                Ok(Ok(status)) => {
-                                    if status.success() {
-                                        info!("Successfully opened bookmark {}", id);
-                                        self.client
-                                            .show_message(
-                                                MessageType::INFO,
-                                                &format!("Opened bookmark {}", id),
-                                            )
-                                            .await;
-                                    } else {
-                                        warn!(
-                                            "bkmr open command failed for bookmark {} with exit code: {:?}",
-                                            id,
-                                            status.code()
-                                        );
-                                    }
-                                }
-                                Ok(Err(e)) => {
-                                    error!(
-                                        "Failed to execute bkmr open for bookmark {}: {}",
-                                        id, e
-                                    );
-                                    self.client
-                                        .show_message(
-                                            MessageType::ERROR,
-                                            &format!("Failed to open bookmark {}: {}", id, e),
-                                        )
-                                        .await;
-                                }
-                                Err(_) => {
-                                    error!("bkmr open command timed out for bookmark {}", id);
-                                    self.client
-                                        .show_message(
-                                            MessageType::ERROR,
-                                            &format!("Bookmark {} open timed out", id),
-                                        )
-                                        .await;
-                                }
-                            }
-                        }
-                    }
-                }
-                Ok(None)
-            }
-            _ => {
-                warn!("Unknown command: {}", params.command);
-                self.client
-                    .log_message(
-                        MessageType::WARNING,
-                        &format!("Unknown command: {}", params.command),
-                    )
-                    .await;
-                Ok(None)
-            }
-        }
-    }
 }

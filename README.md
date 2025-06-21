@@ -4,7 +4,7 @@ Language Server Protocol (LSP) implementation for [bkmr](https://github.com/sysi
 
 ## Overview
 
-bkmr-lsp provides code completion for bkmr snippets in any LSP-compatible editor. Snippets are automatically interpolated, delivering processed content rather than raw templates.
+bkmr-lsp provides trigger-based snippet completion for bkmr snippets in any LSP-compatible editor. Type `:` followed by letters to get snippet completions. Snippets are automatically interpolated, delivering processed content rather than raw templates.
 
 ## Requirements
 
@@ -91,14 +91,14 @@ require'lspconfig'.bkmr_lsp.setup{
 
 ## Usage
 
-### Code Completion
+### Snippet Completion
 
-Start typing in any file and trigger completion:
+Type `:` followed by letters to trigger snippet completion:
 
-- **VS Code**: `Ctrl+Space`
-- **Vim**: `Ctrl+X Ctrl+O` or `Ctrl+N`
-- **Neovim**: Automatic with completion plugins
-- **Emacs**: `M-x completion-at-point`
+- **Examples**: `:hello`, `:js`, `:aws`
+- **Trigger character**: `:` (colon)
+- **Manual trigger**: `Ctrl+Space` when in snippet context
+- **Navigation**: Use arrow keys, Tab or Enter to complete
 
 ### Template Interpolation
 
@@ -111,18 +111,13 @@ Snippets with templates are automatically processed:
 
 ### Filtering
 
-Use prefixes to filter completions:
+Use prefixes after `:` to filter completions:
 
-- Type `js` to show JavaScript snippets
-- Type `py` to show Python snippets
-- Type partial titles to narrow results
+- Type `:js` to show JavaScript snippets
+- Type `:py` to show Python snippets  
+- Type `:aws` to show AWS-related snippets
+- Partial matches filter by snippet titles
 
-## Commands
-
-The LSP server supports these commands:
-
-- `bkmr.refresh`: Refresh snippet cache (no-op, snippets are fetched live)
-- `bkmr.open`: Open snippet by ID
 
 
 ## Troubleshooting
@@ -173,9 +168,9 @@ RUST_LOG=debug bkmr-lsp 2>lsp.log
 
 - **LSP Version**: 3.17
 - **Features**: 
-  - Text document completion
-  - Command execution
-  - Workspace commands
+  - Text document completion with `:` trigger character
+  - Template interpolation
+  - Live snippet fetching
 
 ## Contributing
 
