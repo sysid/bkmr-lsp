@@ -599,7 +599,10 @@ impl LanguageServer for BkmrLspBackend {
                     );
                 }
 
-                Ok(Some(CompletionResponse::Array(completion_items)))
+                Ok(Some(CompletionResponse::List(CompletionList {
+                    is_incomplete: true,
+                    items: completion_items,
+                })))
             }
             Err(e) => {
                 error!("Failed to fetch snippets: {}", e);
