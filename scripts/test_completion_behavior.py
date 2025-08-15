@@ -1,14 +1,44 @@
 #!/usr/bin/env python3
 """
-Test incremental typing behavior to verify whether each keystroke triggers a new bkmr query.
+============================================================================
+test_completion_behavior.py - Incremental Typing Behavior Analysis
+============================================================================
 
-This tests the sequence: ":" → ":g" → ":gh" and monitors bkmr command executions.
+Purpose:
+    Analyzes whether bkmr-lsp implements server-side or client-side filtering
+    by testing incremental typing patterns and monitoring bkmr query execution.
 
-Expected behavior:
-- Client-side filtering (broken): 1 bkmr query total
-- Server-side filtering (correct): 3 bkmr queries with increasingly specific filters
+Test Method:
+    Simulates typing sequence: ":" → ":g" → ":gh" and counts bkmr queries
 
-Usage: python3 scripts/test-incremental-typing.py ~/bin/bkmr-lsp
+Expected Behaviors:
+    • Client-side filtering (problematic): 1 bkmr query total
+      - Only initial trigger executes bkmr search
+      - Subsequent typing filters cached results on client
+      - May miss relevant completions
+    
+    • Server-side filtering (correct): 3+ bkmr queries  
+      - Each keystroke triggers new bkmr search
+      - Filters become progressively more specific
+      - Shows all relevant completions
+
+Usage:
+    python3 scripts/test_completion_behavior.py <path-to-bkmr-lsp-binary>
+
+Examples:
+    python3 scripts/test_completion_behavior.py ~/bin/bkmr-lsp
+    python3 scripts/test_completion_behavior.py ./target/debug/bkmr-lsp
+
+Output:
+    - Real-time monitoring of bkmr command executions
+    - Analysis of filtering behavior (server vs client-side)
+    - Filter progression showing query refinement
+    - Clear pass/fail determination
+
+Diagnostics:
+    This test helps diagnose completion issues where not all expected
+    results appear in LSP clients (particularly in Neovim/Vim).
+============================================================================
 """
 
 import json
@@ -21,13 +51,15 @@ from typing import List, Dict, Any
 
 
 class BkmrQueryMonitor:
+    """Monitors and analyzes bkmr command executions during LSP completion testing."""
+    
     def __init__(self):
         self.bkmr_commands = []
         self.completion_responses = []
     
     def add_bkmr_command(self, command_line: str):
         """Extract and store bkmr command details"""
-        # Parse command like: ["search", "--json", "--interpolate", "-t", "_snip_", "--limit", "50", "metadata:gh*"]
+        # Parse bkmr command: ["search", "--json", "--interpolate", "--ntags-prefix", "_snip_", "--limit", "50", "metadata:gh*"]
         try:
             # Remove brackets and quotes, split by comma
             args_str = command_line.strip('[]')
@@ -77,8 +109,8 @@ class BkmrQueryMonitor:
             })
     
     def analyze_results(self):
-        """Analyze the captured data to determine filtering behavior"""
-        print(f"\n📊 ANALYSIS RESULTS:")
+        """Analyze captured data to determine server vs client-side filtering behavior."""
+        print(f"\n📊 BEHAVIOR ANALYSIS RESULTS:")
         print(f"   Total bkmr commands executed: {len(self.bkmr_commands)}")
         print(f"   Total completion responses: {len(self.completion_responses)}")
         
@@ -97,26 +129,31 @@ class BkmrQueryMonitor:
             print(f"   {i+1}. Type: {resp['type']}, Items: {resp['item_count']}{incomplete_info}")
         
         # Determine behavior
-        print(f"\n🎯 BEHAVIOR ANALYSIS:")
+        print(f"\n🎯 FILTERING BEHAVIOR DETERMINATION:")
         if len(self.bkmr_commands) == 1:
-            print("   ❌ CLIENT-SIDE FILTERING DETECTED (Broken)")
-            print("   → Only 1 bkmr query executed, subsequent typing uses cached results")
+            print("   ❌ CLIENT-SIDE FILTERING DETECTED (Problematic)")
+            print("   → Only 1 bkmr query executed for initial trigger")
+            print("   → Subsequent keystrokes filter cached results client-side")
+            print("   → This can cause missing completions in some LSP clients")
             return False
         elif len(self.bkmr_commands) >= 3:
-            print("   ✅ SERVER-SIDE FILTERING DETECTED (Working)")
-            print("   → Multiple bkmr queries executed, each keystroke triggers new query")
+            print("   ✅ SERVER-SIDE FILTERING DETECTED (Optimal)")
+            print("   → Multiple bkmr queries executed, one per keystroke")
+            print("   → Each query refines the search filter progressively")
             
-            # Check if filters are becoming more specific
+            # Analyze filter progression
             filters = [cmd['search_filter'] for cmd in self.bkmr_commands if cmd['search_filter']]
             if len(filters) >= 2:
                 print(f"   → Filter progression: {' → '.join(filters)}")
                 if any('gh' in f for f in filters):
-                    print("   → Filters are becoming more specific ✅")
+                    print("   → Filters becoming more specific as expected ✅")
+                    print("   → This ensures comprehensive completion coverage")
                 else:
-                    print("   → Filters might not be progressing as expected ⚠️")
+                    print("   → Filter progression may not be working as expected ⚠️")
             return True
         else:
-            print(f"   ⚠️  UNEXPECTED BEHAVIOR: {len(self.bkmr_commands)} queries")
+            print(f"   ⚠️  UNEXPECTED BEHAVIOR: {len(self.bkmr_commands)} queries detected")
+            print(f"   → Expected either 1 (client-side) or 3+ (server-side) queries")
             return False
 
 
@@ -234,16 +271,17 @@ class LSPClient:
             self.process.kill()
 
 
-def test_incremental_typing(server_cmd: str):
-    """Test the incremental typing sequence: ':' → ':g' → ':gh'"""
+def test_completion_behavior(server_cmd: str):
+    """Test completion behavior using incremental typing sequence: ':' → ':g' → ':gh'"""
     
     monitor = BkmrQueryMonitor()
     client = LSPClient(server_cmd, monitor)
     
     try:
-        print("🧪 Testing incremental typing behavior...")
-        print("   Sequence: ':' → ':g' → ':gh'")
-        print("   Monitoring bkmr command executions...")
+        print("🧪 Testing completion behavior with incremental typing...")
+        print("   Test sequence: ':' → ':g' → ':gh'")
+        print("   Monitoring: bkmr command executions and filtering behavior")
+        print("   Goal: Determine if filtering is server-side or client-side")
         
         # Initialize LSP
         response = client.send_request("initialize", {
@@ -329,7 +367,7 @@ def test_incremental_typing(server_cmd: str):
             # Delay between requests
             time.sleep(0.1)
         
-        # Analyze results
+        # Analyze results and determine filtering behavior
         success = monitor.analyze_results()
         
         # Cleanup
@@ -344,27 +382,37 @@ def test_incremental_typing(server_cmd: str):
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python test-incremental-typing.py <path-to-bkmr-lsp-binary>")
-        print("Example: python test-incremental-typing.py ~/bin/bkmr-lsp")
+        print("Usage: python3 scripts/test_completion_behavior.py <path-to-bkmr-lsp-binary>")
+        print("")
+        print("Examples:")
+        print("  python3 scripts/test_completion_behavior.py ~/bin/bkmr-lsp")
+        print("  python3 scripts/test_completion_behavior.py ./target/debug/bkmr-lsp")
         sys.exit(1)
         
     server_cmd = sys.argv[1]
     
-    print("=" * 70)
-    print("🔬 INCREMENTAL TYPING TEST")
-    print("=" * 70)
+    print("=" * 80)
+    print("🔬 COMPLETION BEHAVIOR ANALYSIS")
+    print("=" * 80)
+    print("📋 Testing: Server-side vs Client-side filtering behavior")
+    print("🎯 Method: Incremental typing with bkmr query monitoring")
+    print("=" * 80)
     
-    success = test_incremental_typing(server_cmd)
+    success = test_completion_behavior(server_cmd)
     
-    print("\n" + "=" * 70)
+    print("\n" + "=" * 80)
     if success:
-        print("✅ TEST PASSED: Server-side filtering is working correctly")
-        print("   Each keystroke triggers a new bkmr query with specific filters")
+        print("✅ RESULT: Server-side filtering is working optimally")
+        print("   🔄 Each keystroke triggers a new bkmr query with refined filters")
+        print("   🎯 This ensures comprehensive completion coverage")
+        print("   💡 LSP clients should receive all relevant completions")
     else:
-        print("❌ TEST FAILED: Client-side filtering detected")
-        print("   Only initial trigger causes bkmr query, subsequent typing uses cached results")
-        print("   This explains why not all gh-* completions are shown in nvim")
-    print("=" * 70)
+        print("❌ RESULT: Client-side filtering detected (potentially problematic)")
+        print("   🔄 Only initial trigger executes bkmr query")
+        print("   📱 Subsequent typing filters cached results client-side")
+        print("   ⚠️  This may cause missing completions in some LSP clients")
+        print("   🐛 Particularly affects Neovim/Vim completion behavior")
+    print("=" * 80)
 
 
 if __name__ == "__main__":

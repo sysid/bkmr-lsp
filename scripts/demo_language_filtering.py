@@ -73,7 +73,8 @@ def test_filetype_extraction():
             text=False
         )
     except FileNotFoundError:
-        print("Error: bkmr-lsp not found. Run 'make install-debug' first.")
+        print("❌ Error: bkmr-lsp binary not found.")
+        print("🔧 Solution: Run 'make install-debug' or 'cargo build' first.")
         return False
 
     # Redirect stderr to log file

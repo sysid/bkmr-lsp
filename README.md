@@ -172,7 +172,7 @@ Most LSP clients can execute this command programmatically. For IntelliJ Platfor
 
 ### No Completions Appearing
 
-1. Verify bkmr works: `bkmr search -t _snip_`
+1. Verify bkmr works: `bkmr search --ntags-prefix _snip_`
 2. Check bkmr version: `bkmr --version`
 3. Test LSP server: `echo '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}' | bkmr-lsp`
 
@@ -258,10 +258,10 @@ The LSP server implements language-aware filtering through:
 2. **Filtering Logic**: During completion requests, the server adds the cached language ID as a tag filter to the bkmr search command:
    ```bash
    # Without language filtering:
-   bkmr search --json --interpolate -t _snip_ --limit 50 metadata:query*
+   bkmr search --json --interpolate --ntags-prefix _snip_ --limit 50 metadata:query*
    
    # With language filtering (e.g., for Rust files):
-   bkmr search --json --interpolate -t _snip_ --limit 50 -t rust metadata:query*
+   bkmr search --json --interpolate --ntags-prefix _snip_ --limit 50 -t rust metadata:query*
    ```
 
 3. **Cache Management**: Language IDs are stored per document URI and cleaned up when documents are closed

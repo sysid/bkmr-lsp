@@ -116,7 +116,7 @@ impl BkmrLspBackend {
             "search".to_string(),
             "--json".to_string(),
             "--interpolate".to_string(), // ← ADD THIS: Always use interpolation
-            "-t".to_string(),
+            "--ntags-prefix".to_string(),
             "_snip_".to_string(),
             "--limit".to_string(),
             self.config.max_completions.to_string(),

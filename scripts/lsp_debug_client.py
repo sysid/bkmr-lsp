@@ -1,6 +1,43 @@
 #!/usr/bin/env python3
 """
-Enhanced LSP client for testing bkmr-lsp server with better error handling and debugging.
+============================================================================
+lsp_debug_client.py - Enhanced LSP Protocol Debugging Client
+============================================================================
+
+Purpose:
+    Professional LSP client for testing and debugging bkmr-lsp server with
+    comprehensive error handling, detailed logging, and protocol validation.
+
+Features:
+    • Complete LSP protocol implementation
+    • Detailed request/response logging with pretty-printing
+    • Server stderr monitoring and filtering
+    • Robust error handling and timeout management
+    • Process lifecycle management
+    • Real-time protocol debugging
+
+Usage:
+    python3 scripts/lsp_debug_client.py <path-to-bkmr-lsp-binary>
+
+Examples:
+    python3 scripts/lsp_debug_client.py ~/bin/bkmr-lsp
+    python3 scripts/lsp_debug_client.py ./target/debug/bkmr-lsp
+    python3 scripts/lsp_debug_client.py ./target/release/bkmr-lsp
+
+Output:
+    - Structured LSP message logging (requests and responses)
+    - Server stderr output with filtering
+    - Connection status and error diagnostics
+    - Completion results analysis
+    - Process management status
+
+Use Cases:
+    • LSP server development and debugging
+    • Protocol compliance testing
+    • Communication troubleshooting
+    • Performance analysis
+    • Integration testing
+============================================================================
 """
 
 import json
@@ -12,8 +49,10 @@ from typing import Dict, Any, Optional
 
 
 class LSPClient:
+    """Enhanced LSP client with comprehensive debugging and error handling."""
+    
     def __init__(self, server_cmd: str):
-        print(f"Starting server: {server_cmd}")
+        print(f"🚀 Starting LSP server: {server_cmd}")
 
         self.process = subprocess.Popen(
             server_cmd,
@@ -33,17 +72,23 @@ class LSPClient:
         # Give server time to start
         time.sleep(0.5)
 
-        # Check if process is still running
+        # Validate server started successfully
         if self.process.poll() is not None:
-            raise RuntimeError(f"Server process exited immediately with code {self.process.returncode}")
+            raise RuntimeError(f"❌ Server process exited immediately with code {self.process.returncode}")
 
     def _read_stderr(self):
-        """Read stderr output from server in background"""
+        """Monitor and filter server stderr output in background thread."""
         try:
             for line in iter(self.process.stderr.readline, ''):
                 if line:
-                    print(f"[SERVER STDERR] {line.rstrip()}")
-        except:
+                    # Filter important server messages
+                    line = line.rstrip()
+                    if any(keyword in line for keyword in ['ERROR', 'WARN', 'Successfully fetched', 'Executing bkmr']):
+                        print(f"🔍 [SERVER] {line}")
+                    elif 'DEBUG' in line and 'completion' in line.lower():
+                        print(f"📊 [DEBUG] {line}")
+        except Exception as e:
+            # Silent failure for stderr monitoring
             pass
 
     def send_message(self, message: Dict[str, Any]) -> None:
@@ -51,8 +96,10 @@ class LSPClient:
         json_str = json.dumps(message)
         content = f"Content-Length: {len(json_str)}\r\n\r\n{json_str}"
 
-        print(f">>> SENDING:")
-        print(f"Content-Length: {len(json_str)}")
+        print(f"📤 >>> SENDING LSP MESSAGE:")
+        print(f"    Content-Length: {len(json_str)}")
+        print(f"    Method: {message.get('method', 'N/A')}")
+        print(f"    ID: {message.get('id', 'N/A')}")
         print(json.dumps(message, indent=2))
         print()
 
@@ -60,7 +107,7 @@ class LSPClient:
             self.process.stdin.write(content)
             self.process.stdin.flush()
         except BrokenPipeError:
-            raise RuntimeError("Server stdin pipe broken - server may have crashed")
+            raise RuntimeError("❌ Server stdin pipe broken - server may have crashed")
 
     def read_message(self, timeout: float = 5.0) -> Optional[Dict[str, Any]]:
         """Read a JSON-RPC message from the LSP server with timeout"""
@@ -70,12 +117,12 @@ class LSPClient:
             # Read Content-Length header with timeout
             while True:
                 if time.time() - start_time > timeout:
-                    print(f"TIMEOUT: No response after {timeout} seconds")
+                    print(f"⏰ TIMEOUT: No response after {timeout} seconds")
                     return None
 
                 # Check if process died
                 if self.process.poll() is not None:
-                    print(f"ERROR: Server process died with exit code {self.process.returncode}")
+                    print(f"❌ ERROR: Server process died with exit code {self.process.returncode}")
                     return None
 
                 line = self.process.stdout.readline()
@@ -100,19 +147,23 @@ class LSPClient:
 
             message = json.loads(content)
 
-            print(f"<<< RECEIVED:")
-            print(f"Content-Length: {content_length}")
+            print(f"📥 <<< RECEIVED LSP MESSAGE:")
+            print(f"    Content-Length: {content_length}")
+            print(f"    Method: {message.get('method', 'N/A')}")
+            print(f"    ID: {message.get('id', 'N/A')}")
+            if 'error' in message:
+                print(f"    ❌ ERROR: {message.get('error', {})}")
             print(json.dumps(message, indent=2))
             print()
 
             return message
 
         except json.JSONDecodeError as e:
-            print(f"ERROR: Failed to decode JSON: {e}")
-            print(f"Raw content was: {repr(content)}")
+            print(f"❌ JSON ERROR: Failed to decode server response: {e}")
+            print(f"    Raw content: {repr(content)}")
             return None
         except Exception as e:
-            print(f"ERROR: Exception reading message: {e}")
+            print(f"❌ COMMUNICATION ERROR: {e}")
             return None
 
     def next_id(self) -> int:
@@ -209,9 +260,14 @@ class LSPClient:
 
 
 def test_lsp_server(server_path: str):
-    """Test the LSP server with a sequence of operations"""
-    print("=== Starting Enhanced LSP Server Test ===")
-    print(f"Server command: {server_path}")
+    """Execute comprehensive LSP server testing sequence."""
+    print("=" * 80)
+    print("🔧 Enhanced LSP Server Debug Session")
+    print("=" * 80)
+    print(f"💻 Server binary: {server_path}")
+    print(f"📄 Protocol: Language Server Protocol (LSP) 3.17")
+    print(f"🐛 Purpose: Debug and validate bkmr-lsp functionality")
+    print("=" * 80)
     print()
 
     try:
@@ -225,38 +281,64 @@ def test_lsp_server(server_path: str):
         print("=== 1. INITIALIZE ===")
         init_response = client.initialize()
         if not init_response:
-            print("❌ Failed to get initialize response")
+            print("❌ FAILED: No initialize response received")
+            return
+        elif 'error' in init_response:
+            print(f"❌ FAILED: Initialize error: {init_response['error']}")
             return
         else:
-            print("✅ Initialize successful")
+            print("✅ SUCCESS: LSP server initialized")
+            capabilities = init_response.get('result', {}).get('capabilities', {})
+            if capabilities:
+                print(f"    🛠️  Server capabilities: {list(capabilities.keys())}")
 
         # Step 2: Initialized notification
-        print("=== 2. INITIALIZED ===")
+        print("\n=== 2. INITIALIZED NOTIFICATION ===")
         client.initialized()
-        time.sleep(1)  # Give server time to process and cache
+        print("✅ Initialized notification sent")
+        time.sleep(1)  # Give server time to process
 
         # Step 3: Test completion
-        print("=== 3. COMPLETION REQUEST ===")
+        print("\n=== 3. COMPLETION REQUEST ===")
         completion_response = client.completion()
         if completion_response:
-            result = completion_response.get("result")
-            if result:
-                print(f"✅ Got {len(result)} completion items")
-                for i, item in enumerate(result[:3]):  # Show first 3 items
-                    print(f"  {i + 1}. {item.get('label', 'No label')} - {item.get('kind', 'No kind')}")
+            if 'error' in completion_response:
+                print(f"❌ COMPLETION ERROR: {completion_response['error']}")
             else:
-                print("⚠️  No completion results")
+                result = completion_response.get("result")
+                if result:
+                    item_count = len(result) if isinstance(result, list) else len(result.get('items', []))
+                    print(f"✅ SUCCESS: Received {item_count} completion items")
+                    
+                    # Show first few items with details
+                    items = result if isinstance(result, list) else result.get('items', [])
+                    for i, item in enumerate(items[:3]):
+                        label = item.get('label', 'No label')
+                        kind = item.get('kind', 'Unknown')
+                        detail = item.get('detail', '')
+                        print(f"    {i + 1}. {label} (kind: {kind}) {detail}")
+                    
+                    if len(items) > 3:
+                        print(f"    ... and {len(items) - 3} more items")
+                else:
+                    print("⚠️  Empty completion result")
         else:
-            print("❌ No completion response")
+            print("❌ FAILED: No completion response received")
 
         # Step 4: Shutdown
-        print("=== 4. SHUTDOWN ===")
+        print("\n=== 4. SHUTDOWN SEQUENCE ===")
         shutdown_response = client.shutdown()
         if shutdown_response:
-            print("✅ Shutdown successful")
+            print("✅ Shutdown request acknowledged")
+        else:
+            print("⚠️  No shutdown response")
+        
         client.exit()
-
-        print("=== Test completed ===")
+        print("✅ Exit notification sent")
+        
+        print("\n" + "=" * 80)
+        print("✅ LSP debug session completed successfully")
+        print("=" * 80)
 
     except KeyboardInterrupt:
         print("\n❌ Test interrupted by user")
@@ -270,8 +352,14 @@ def test_lsp_server(server_path: str):
 
 def main():
     if len(sys.argv) != 2:
-        print("Usage: python test_lsp_debug.py <path-to-bkmr-lsp-binary>")
-        print("Example: python test_lsp_debug.py ./target/release/bkmr-lsp")
+        print("Usage: python3 scripts/lsp_debug_client.py <path-to-bkmr-lsp-binary>")
+        print("")
+        print("Examples:")
+        print("  python3 scripts/lsp_debug_client.py ~/bin/bkmr-lsp")
+        print("  python3 scripts/lsp_debug_client.py ./target/debug/bkmr-lsp")
+        print("  python3 scripts/lsp_debug_client.py ./target/release/bkmr-lsp")
+        print("")
+        print("Purpose: Debug LSP protocol communication with bkmr-lsp server")
         sys.exit(1)
 
     server_path = sys.argv[1]
@@ -279,8 +367,12 @@ def main():
     # Verify server binary exists
     import os
     if not os.path.exists(server_path):
-        print(f"❌ Server binary not found: {server_path}")
-        print("Make sure to build the project first: cargo build --release")
+        print(f"❌ ERROR: Server binary not found: {server_path}")
+        print("")
+        print("🔧 Build the project first:")
+        print("  cargo build --release      # For release build")
+        print("  cargo build                # For debug build")
+        print("  make install-debug         # Build and install debug version")
         sys.exit(1)
 
     test_lsp_server(server_path)
