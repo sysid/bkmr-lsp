@@ -59,9 +59,9 @@ impl BkmrLspBackend {
         }
     }
 
-    /// Extract word backwards from cursor position
+    /// Extract word backwards from cursor position and return both query and range
     #[instrument(skip(self))]
-    fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<String> {
+    fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<(String, Range)> {
         let cache = self.document_cache.read().ok()?;
         let content = cache.get(&uri.to_string())?;
 
@@ -95,7 +95,20 @@ impl BkmrLspBackend {
             let word = &before_cursor[word_start..];
             if !word.is_empty() && word.chars().any(|c| c.is_alphanumeric()) {
                 debug!("Extracted word: '{}' from position {}", word, char_pos);
-                return Some(word.to_string());
+                
+                // Create range for the word to be replaced
+                let range = Range {
+                    start: Position {
+                        line: position.line,
+                        character: word_start as u32,
+                    },
+                    end: Position {
+                        line: position.line,
+                        character: char_pos as u32,
+                    },
+                };
+                
+                return Some((word.to_string(), range));
             }
         }
 
@@ -186,51 +199,52 @@ impl BkmrLspBackend {
         Ok(snippets)
     }
 
-    /// Convert bkmr snippet to LSP completion item with trigger-aware text replacement
+    /// Convert bkmr snippet to LSP completion item with proper text replacement
     fn snippet_to_completion_item_with_trigger(
         &self,
         snippet: &BkmrSnippet,
-        _position: Position,
         query: &str,
+        replacement_range: Option<Range>,
     ) -> CompletionItem {
-        let original_insert_text = snippet.url.clone();
+        let snippet_content = snippet.url.clone();
         let label = snippet.title.clone();
 
-        // Check if insertText starts with query (case insensitive)
-        let insert_matches = original_insert_text
-            .to_lowercase()
-            .starts_with(&query.to_lowercase());
-
-        // If insertText doesn't match query, prefix it with the query (vim lsp workaround)
-        let insert_text = if !insert_matches && !query.is_empty() {
-            format!("{} {}", query, original_insert_text)
-        } else {
-            original_insert_text
-        };
-
         debug!(
-            "Completion item: query='{}', label='{}', insertText='{}' (fixed={})",
+            "Creating completion item: query='{}', label='{}', content_preview='{}'",
             query,
             label,
-            insert_text.chars().take(20).collect::<String>(),
-            !insert_matches
+            snippet_content.chars().take(20).collect::<String>()
         );
 
-        CompletionItem {
+        let mut completion_item = CompletionItem {
             label: label.clone(),
             kind: Some(CompletionItemKind::TEXT),
-            // detail: Some(format!("bkmr #{}", snippet.id)),
-            documentation: Some(Documentation::String(if insert_text.len() > 500 {
-                format!("{}...", &insert_text[..500])
+            detail: Some(format!("bkmr snippet")),
+            documentation: Some(Documentation::String(if snippet_content.len() > 500 {
+                format!("{}...", &snippet_content[..500])
             } else {
-                insert_text.clone()
+                snippet_content.clone()
             })),
-            insert_text: Some(insert_text),
             insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
             filter_text: Some(label.clone()),
             sort_text: Some(label.clone()),
             ..Default::default()
+        };
+
+        // Use TextEdit for proper replacement if we have a range
+        if let Some(range) = replacement_range {
+            completion_item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: snippet_content,
+            }));
+            debug!("Set text_edit for range replacement: {:?}", range);
+        } else {
+            // Fallback to insert_text for backward compatibility
+            completion_item.insert_text = Some(snippet_content);
+            debug!("Using fallback insert_text (no range available)");
         }
+
+        completion_item
     }
 
     /// Check if bkmr binary is available
@@ -544,26 +558,30 @@ impl LanguageServer for BkmrLspBackend {
             return Ok(Some(CompletionResponse::Array(vec![])));
         }
 
-        // Extract the query after trigger
-        let query = self.extract_snippet_query(uri, position);
-        debug!("Extracted snippet query: {:?}", query);
+        // Extract the query after trigger and get replacement range
+        let query_info = self.extract_snippet_query(uri, position);
+        debug!("Extracted snippet query info: {:?}", query_info);
 
         // Get the language ID for filetype-based filtering
         let language_id = self.get_language_id(uri);
         debug!("Document language ID: {:?}", language_id);
 
-        // The trigger context is just the word we extracted
-        let trigger_context = query.clone().unwrap_or_default();
-        debug!("Trigger context: '{}'", trigger_context);
+        // Extract query and range information
+        let (query_str, replacement_range) = if let Some((query, range)) = query_info {
+            debug!("Query: '{}', Range: {:?}", query, range);
+            (query, Some(range))
+        } else {
+            debug!("No query extracted, using empty query");
+            (String::new(), None)
+        };
 
-        match self.fetch_snippets(query.as_deref(), language_id.as_deref()).await {
+        match self.fetch_snippets(if query_str.is_empty() { None } else { Some(&query_str) }, language_id.as_deref()).await {
             Ok(snippets) => {
-                let query_str = query.as_deref().unwrap_or(""); // Clean query: "aws", not ":aws"
                 let completion_items: Vec<CompletionItem> = snippets
                     .iter()
                     .map(|snippet| {
                         self.snippet_to_completion_item_with_trigger(
-                            snippet, position, query_str, // Pass "aws", not ":aws"
+                            snippet, &query_str, replacement_range.clone(),
                         )
                     })
                     .collect();
@@ -571,7 +589,7 @@ impl LanguageServer for BkmrLspBackend {
                 info!(
                     "Returning {} completion items for query: {:?}",
                     completion_items.len(),
-                    query
+                    query_str
                 );
 
                 // Only log first few items to reduce noise in LSP logs
