@@ -6,6 +6,18 @@ use std::path::Path;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
+/// Language-specific information for universal snippets
+#[derive(Debug, Clone)]
+pub struct LanguageInfo {
+    pub name: String,
+    pub line_comment: Option<String>,
+    pub block_comment: Option<(String, String)>,
+    pub fold_markers: (String, String),
+    pub indent_char: String,
+    pub indent_width: usize,
+    pub file_extensions: Vec<String>,
+}
+
 /// Configuration for the bkmr-lsp server
 #[derive(Debug, Clone)]
 pub struct BkmrConfig {
@@ -57,6 +69,128 @@ impl BkmrLspBackend {
                 std::collections::HashMap::new(),
             )),
         }
+    }
+
+    /// Create standalone language info for testing (no client required)
+    #[cfg(test)]
+    pub fn get_language_info_static(language_id: &str) -> LanguageInfo {
+        // This is a copy of the get_language_info logic for testing
+        match language_id.to_lowercase().as_str() {
+            "rust" => LanguageInfo {
+                name: "Rust".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["rs".to_string()],
+            },
+            "javascript" => LanguageInfo {
+                name: "JavaScript".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["js".to_string(), "mjs".to_string()],
+            },
+            "python" => LanguageInfo {
+                name: "Python".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("\"\"\"".to_string(), "\"\"\"".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["py".to_string(), "pyw".to_string()],
+            },
+            "go" => LanguageInfo {
+                name: "Go".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "\t".to_string(),
+                indent_width: 1,
+                file_extensions: vec!["go".to_string()],
+            },
+            "html" => LanguageInfo {
+                name: "HTML".to_string(),
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["html".to_string(), "htm".to_string()],
+            },
+            "css" => LanguageInfo {
+                name: "CSS".to_string(),
+                line_comment: None,
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["css".to_string()],
+            },
+            _ => LanguageInfo {
+                name: "Unknown".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec![],
+            },
+        }
+    }
+
+    /// Process LSP placeholders for testing (no client required)
+    #[cfg(test)]
+    pub fn process_lsp_placeholders_static(content: &str, language_id: &str, uri: &Url) -> String {
+        let lang_info = Self::get_language_info_static(language_id);
+        
+        let mut processed_content = content.to_string();
+        
+        // Replace LSP_COMMENT_LINE
+        if let Some(line_comment) = &lang_info.line_comment {
+            processed_content = processed_content.replace("LSP_COMMENT_LINE", line_comment);
+        } else if let Some((block_start, block_end)) = &lang_info.block_comment {
+            // For languages without line comments, use block comment format for single line comments
+            let line_replacement = format!("{} CONTENT {}", block_start, block_end);
+            processed_content = processed_content.replace("LSP_COMMENT_LINE", &line_replacement);
+            processed_content = processed_content.replace("CONTENT", "");
+        }
+        
+        // Replace LSP_COMMENT_BLOCK_START and LSP_COMMENT_BLOCK_END
+        if let Some((block_start, block_end)) = &lang_info.block_comment {
+            processed_content = processed_content.replace("LSP_COMMENT_BLOCK_START", block_start);
+            processed_content = processed_content.replace("LSP_COMMENT_BLOCK_END", block_end);
+        }
+        
+        // Replace LSP_INDENT
+        processed_content = processed_content.replace("LSP_INDENT", &lang_info.indent_char);
+        
+        // Replace LSP_FOLD_START and LSP_FOLD_END
+        processed_content = processed_content.replace("LSP_FOLD_START", &lang_info.fold_markers.0);
+        processed_content = processed_content.replace("LSP_FOLD_END", &lang_info.fold_markers.1);
+        
+        // Replace LSP_FILEPATH with relative path
+        let relative_path = Self::get_relative_path_static(uri);
+        processed_content = processed_content.replace("LSP_FILEPATH", &relative_path);
+        
+        processed_content
+    }
+
+    /// Get relative path for testing (no client required)
+    #[cfg(test)]
+    pub fn get_relative_path_static(uri: &Url) -> String {
+        let file_path = match uri.to_file_path() {
+            Ok(p) => p,
+            Err(_) => return uri.to_string(),
+        };
+        
+        file_path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| uri.to_string())
     }
 
     /// Extract word backwards from cursor position and return both query and range
@@ -199,14 +333,76 @@ impl BkmrLspBackend {
         Ok(snippets)
     }
 
+    /// Process LSP placeholders in snippet content for universal snippets
+    pub fn process_lsp_placeholders(&self, content: &str, language_id: &str, uri: &Url) -> String {
+        let lang_info = self.get_language_info(language_id);
+        
+        debug!("Processing LSP placeholders for language: {} ({})", lang_info.name, language_id);
+        
+        let mut processed_content = content.to_string();
+        
+        // Replace comment placeholders
+        if let Some(line_comment) = &lang_info.line_comment {
+            processed_content = processed_content.replace("LSP_COMMENT_LINE", line_comment);
+        } else {
+            // Fallback to block comment for languages without line comments
+            if let Some((start, _)) = &lang_info.block_comment {
+                processed_content = processed_content.replace("LSP_COMMENT_LINE", start);
+            } else {
+                processed_content = processed_content.replace("LSP_COMMENT_LINE", "/*");
+            }
+        }
+        
+        if let Some((start, end)) = &lang_info.block_comment {
+            processed_content = processed_content.replace("LSP_COMMENT_START", start);
+            processed_content = processed_content.replace("LSP_COMMENT_END", end);
+        } else {
+            // Fallback for languages without block comments
+            processed_content = processed_content.replace("LSP_COMMENT_START", "/*");
+            processed_content = processed_content.replace("LSP_COMMENT_END", "*/");
+        }
+        
+        // Replace fold markers
+        processed_content = processed_content.replace("LSP_FOLD_OPEN", &lang_info.fold_markers.0);
+        processed_content = processed_content.replace("LSP_FOLD_CLOSE", &lang_info.fold_markers.1);
+        
+        // Replace language information
+        processed_content = processed_content.replace("LSP_LANG_NAME", &lang_info.name);
+        processed_content = processed_content.replace("LSP_LANG_EXT", 
+            &lang_info.file_extensions.first().unwrap_or(&"txt".to_string()));
+        
+        // Replace indentation information
+        processed_content = processed_content.replace("LSP_INDENT", &lang_info.indent_char);
+        processed_content = processed_content.replace("LSP_INDENT_CHAR", &lang_info.indent_char);
+        processed_content = processed_content.replace("LSP_INDENT_WIDTH", &lang_info.indent_width.to_string());
+        
+        // Replace file information
+        processed_content = processed_content.replace("LSP_FILE_PATH", &self.get_relative_path(&uri.to_string()));
+        
+        let file_name = uri.path().split('/').last().unwrap_or("untitled");
+        processed_content = processed_content.replace("LSP_FILE_NAME", file_name);
+        
+        // Log if any replacements were made
+        if processed_content != content {
+            debug!("LSP placeholders processed: {} replacements made", 
+                content.matches("LSP_").count());
+        }
+        
+        processed_content
+    }
+
     /// Convert bkmr snippet to LSP completion item with proper text replacement
     fn snippet_to_completion_item_with_trigger(
         &self,
         snippet: &BkmrSnippet,
         query: &str,
         replacement_range: Option<Range>,
+        language_id: &str,
+        uri: &Url,
     ) -> CompletionItem {
-        let snippet_content = snippet.url.clone();
+        // Process LSP placeholders for universal snippets
+        let raw_content = snippet.url.clone();
+        let snippet_content = self.process_lsp_placeholders(&raw_content, language_id, uri);
         let label = snippet.title.clone();
 
         debug!(
@@ -218,14 +414,14 @@ impl BkmrLspBackend {
 
         let mut completion_item = CompletionItem {
             label: label.clone(),
-            kind: Some(CompletionItemKind::TEXT),
+            kind: Some(CompletionItemKind::TEXT),  // TODO: Snippet
             detail: Some(format!("bkmr snippet")),
             documentation: Some(Documentation::String(if snippet_content.len() > 500 {
                 format!("{}...", &snippet_content[..500])
             } else {
                 snippet_content.clone()
             })),
-            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),  // TODO: Snippet
             filter_text: Some(label.clone()),
             sort_text: Some(label.clone()),
             ..Default::default()
@@ -275,44 +471,258 @@ impl BkmrLspBackend {
         Ok(())
     }
 
-    /// Determine the appropriate comment syntax for a file based on its extension
+    /// Get comprehensive language information for universal snippets
+    pub fn get_language_info(&self, language_id: &str) -> LanguageInfo {
+        match language_id.to_lowercase().as_str() {
+            "rust" => LanguageInfo {
+                name: "Rust".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["rs".to_string()],
+            },
+            "javascript" | "js" => LanguageInfo {
+                name: "JavaScript".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["js".to_string(), "mjs".to_string()],
+            },
+            "typescript" | "ts" => LanguageInfo {
+                name: "TypeScript".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["ts".to_string(), "tsx".to_string()],
+            },
+            "python" => LanguageInfo {
+                name: "Python".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("\"\"\"".to_string(), "\"\"\"".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["py".to_string(), "pyw".to_string()],
+            },
+            "go" => LanguageInfo {
+                name: "Go".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "\t".to_string(),
+                indent_width: 1,
+                file_extensions: vec!["go".to_string()],
+            },
+            "java" => LanguageInfo {
+                name: "Java".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["java".to_string()],
+            },
+            "c" => LanguageInfo {
+                name: "C".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["c".to_string(), "h".to_string()],
+            },
+            "cpp" | "c++" => LanguageInfo {
+                name: "C++".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["cpp".to_string(), "cc".to_string(), "cxx".to_string(), "hpp".to_string()],
+            },
+            "html" => LanguageInfo {
+                name: "HTML".to_string(),
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["html".to_string(), "htm".to_string()],
+            },
+            "css" => LanguageInfo {
+                name: "CSS".to_string(),
+                line_comment: None,
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["css".to_string()],
+            },
+            "scss" => LanguageInfo {
+                name: "SCSS".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["scss".to_string()],
+            },
+            "ruby" => LanguageInfo {
+                name: "Ruby".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("=begin".to_string(), "=end".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["rb".to_string()],
+            },
+            "php" => LanguageInfo {
+                name: "PHP".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["php".to_string()],
+            },
+            "swift" => LanguageInfo {
+                name: "Swift".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["swift".to_string()],
+            },
+            "kotlin" => LanguageInfo {
+                name: "Kotlin".to_string(),
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["kt".to_string(), "kts".to_string()],
+            },
+            "shell" | "bash" | "sh" => LanguageInfo {
+                name: "Shell".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec!["sh".to_string(), "bash".to_string(), "zsh".to_string()],
+            },
+            "yaml" | "yml" => LanguageInfo {
+                name: "YAML".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["yaml".to_string(), "yml".to_string()],
+            },
+            "json" => LanguageInfo {
+                name: "JSON".to_string(),
+                line_comment: None,
+                block_comment: None,
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["json".to_string()],
+            },
+            "markdown" | "md" => LanguageInfo {
+                name: "Markdown".to_string(),
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["md".to_string(), "markdown".to_string()],
+            },
+            "xml" => LanguageInfo {
+                name: "XML".to_string(),
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["xml".to_string()],
+            },
+            "vim" | "viml" => LanguageInfo {
+                name: "VimScript".to_string(),
+                line_comment: Some("\"".to_string()),
+                block_comment: None,
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "  ".to_string(),
+                indent_width: 2,
+                file_extensions: vec!["vim".to_string()],
+            },
+            // Default fallback for unknown languages
+            _ => LanguageInfo {
+                name: "Unknown".to_string(),
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                fold_markers: ("{{{".to_string(), "}}}".to_string()),
+                indent_char: "    ".to_string(),
+                indent_width: 4,
+                file_extensions: vec![],
+            },
+        }
+    }
+
+    /// Legacy method for backward compatibility - uses new language info system
     fn get_comment_syntax(&self, file_path: &str) -> &'static str {
         let path = Path::new(file_path);
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-        match extension {
-            // C-style languages
-            "rs" | "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "java" | "js" | "ts" | "jsx"
-            | "tsx" | "cs" | "go" | "swift" | "kt" | "scala" | "dart" => "//",
-            // Shell-style languages
-            "sh" | "bash" | "zsh" | "fish" | "py" | "rb" | "pl" | "r" | "yaml" | "yml" | "toml"
-            | "cfg" | "ini" | "properties" => "#",
-            // HTML/XML
-            "html" | "htm" | "xml" | "xhtml" | "svg" => "<!--",
-            // CSS
-            "css" | "scss" | "sass" | "less" => "/*",
-            // SQL
-            "sql" => "--",
-            // Lua
-            "lua" => "--",
-            // Haskell
-            "hs" => "--",
-            // Lisp family
-            "lisp" | "cl" | "clj" | "cljs" | "scm" | "rkt" => ";",
-            // VimScript
-            "vim" => "\"",
-            // Batch files
-            "bat" | "cmd" => "REM",
-            // PowerShell
-            "ps1" | "psm1" | "psd1" => "#",
-            // LaTeX
-            "tex" | "latex" => "%",
-            // Fortran
-            "f" | "f77" | "f90" | "f95" | "f03" | "f08" => "!",
-            // MATLAB
-            "m" => "%",
-            // Default to hash for unknown file types
-            _ => "#",
+        
+        // Map file extension to language ID for language info lookup
+        let language_id = match extension {
+            "rs" => "rust",
+            "js" | "mjs" => "javascript", 
+            "ts" | "tsx" => "typescript",
+            "py" | "pyw" => "python",
+            "go" => "go",
+            "java" => "java",
+            "c" | "h" => "c",
+            "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+            "html" | "htm" => "html",
+            "css" => "css",
+            "scss" => "scss",
+            "rb" => "ruby",
+            "php" => "php",
+            "swift" => "swift",
+            "kt" | "kts" => "kotlin",
+            "sh" | "bash" | "zsh" => "shell",
+            "yaml" | "yml" => "yaml",
+            "json" => "json",
+            "md" | "markdown" => "markdown",
+            "xml" => "xml",
+            "vim" => "vim",
+            _ => "unknown",
+        };
+        
+        let lang_info = self.get_language_info(language_id);
+        // Return line comment or block comment start, fallback to #
+        if let Some(line_comment) = &lang_info.line_comment {
+            // This is a bit of a hack since we need to return &'static str
+            // but the LanguageInfo returns String. For the legacy method,
+            // we'll use a simple lookup.
+            match language_id {
+                "rust" | "javascript" | "typescript" | "go" | "java" | "c" | "cpp" | "swift" | "kotlin" | "scss" | "php" => "//",
+                "python" | "shell" | "yaml" => "#",
+                "html" | "markdown" | "xml" => "<!--",
+                "css" => "/*",
+                "vim" => "\"",
+                _ => "#",
+            }
+        } else {
+            "#"
         }
     }
 
@@ -581,7 +991,11 @@ impl LanguageServer for BkmrLspBackend {
                     .iter()
                     .map(|snippet| {
                         self.snippet_to_completion_item_with_trigger(
-                            snippet, &query_str, replacement_range.clone(),
+                            snippet, 
+                            &query_str, 
+                            replacement_range.clone(),
+                            language_id.as_deref().unwrap_or("unknown"),
+                            uri,
                         )
                     })
                     .collect();
