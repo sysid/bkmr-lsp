@@ -1,4 +1,4 @@
-// File: bkmr-lsp/src/backend.rs - Updated completion logic with trigger characters
+// File: bkmr-lsp/src/backend.rs - Word-based completion with manual triggering
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
@@ -54,7 +54,7 @@ impl BkmrLspBackend {
         }
     }
 
-    /// Extract prefix from document at given position
+    /// Extract word backwards from cursor position
     #[instrument(skip(self))]
     fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<String> {
         let cache = self.document_cache.read().ok()?;
@@ -73,35 +73,28 @@ impl BkmrLspBackend {
         }
 
         let before_cursor = &line[..char_pos];
+        debug!("Extracting from line: '{}', char_pos: {}, before_cursor: '{}'", line, char_pos, before_cursor);
+        
+        // Extract word backwards from cursor - find where the word starts
+        let word_start = before_cursor
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(char_pos);
+        
+        debug!("Word boundaries: start={}, end={}", word_start, char_pos);
 
-        // Find the last ':' and check if it's a valid snippet trigger
-        if let Some(trigger_pos) = before_cursor.rfind(':') {
-            let after_trigger = &before_cursor[trigger_pos + 1..];
-
-            // Check if this might be part of a URL, time, or other non-snippet context
-            if trigger_pos > 0 {
-                let char_before = before_cursor.chars().nth(trigger_pos - 1);
-                if let Some(prev_char) = char_before {
-                    // Skip if it looks like URL (http:), time (12:30), or path (C:\)
-                    if prev_char.is_alphanumeric() || prev_char == 'p' || prev_char == 't' {
-                        return None;
-                    }
-                }
-            }
-
-            // Only proceed if:
-            // 1. No whitespace immediately after ':'
-            // 2. All characters are valid identifier chars
-            // 3. We either have content or just typed ':'
-            if !after_trigger.starts_with(char::is_whitespace)
-                && after_trigger
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-            {
-                return Some(after_trigger.to_string());
+        if word_start < char_pos {
+            let word = &before_cursor[word_start..];
+            if !word.is_empty() && word.chars().any(|c| c.is_alphanumeric()) {
+                debug!("Extracted word: '{}' from position {}", word, char_pos);
+                return Some(word.to_string());
             }
         }
 
+        debug!("No valid word found at position {}", char_pos);
         None
     }
 
@@ -411,7 +404,7 @@ impl LanguageServer for BkmrLspBackend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![":".to_string()]),
+                    trigger_characters: None, // No automatic triggers - manual completion only
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
@@ -425,7 +418,7 @@ impl LanguageServer for BkmrLspBackend {
             ..Default::default()
         };
 
-        info!("Initialize complete - trigger characters: [':']");
+        info!("Initialize complete - manual completion only (no trigger characters)");
         Ok(result)
     }
 
@@ -502,39 +495,18 @@ impl LanguageServer for BkmrLspBackend {
             uri, position.line, position.character
         );
 
-        // Check if this was triggered by our trigger character
+        // Only respond to manual completion requests (Ctrl+Space)
         if let Some(context) = &params.context {
             match context.trigger_kind {
-                CompletionTriggerKind::TRIGGER_CHARACTER => {
-                    // This is exactly what we want - triggered by typing ':'
-                    if let Some(trigger_char) = &context.trigger_character {
-                        if trigger_char == ":" {
-                            debug!(
-                                "Triggered by ':' character - proceeding with snippet completion"
-                            );
-                        } else {
-                            debug!(
-                                "Triggered by different character '{}' - skipping",
-                                trigger_char
-                            );
-                            return Ok(Some(CompletionResponse::Array(vec![])));
-                        }
-                    }
-                }
                 CompletionTriggerKind::INVOKED => {
-                    // Manual Ctrl+Space - check if we're in a snippet context
-                    let query = self.extract_snippet_query(uri, position);
-                    if query.is_none() {
-                        debug!("Manual trigger but no snippet context - skipping");
-                        return Ok(Some(CompletionResponse::Array(vec![])));
-                    }
-                    debug!("Manual trigger with snippet context - proceeding");
+                    // Manual Ctrl+Space - proceed with word-based completion
+                    debug!("Manual completion request - proceeding with word-based snippet search");
                 }
                 CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS => {
                     debug!("Completion for incomplete results - proceeding");
                 }
                 _ => {
-                    debug!("Unknown trigger kind - skipping");
+                    debug!("Ignoring automatic trigger - only manual completion supported");
                     return Ok(Some(CompletionResponse::Array(vec![])));
                 }
             }
@@ -547,31 +519,8 @@ impl LanguageServer for BkmrLspBackend {
         let query = self.extract_snippet_query(uri, position);
         debug!("Extracted snippet query: {:?}", query);
 
-        // Determine what text to replace (for proper text editing)
-        // Extract data from cache and drop the guard before await
-        let trigger_context = {
-            let cache = self.document_cache.read().unwrap();
-            let content = cache.get(&uri.to_string()).map(|s| &**s).unwrap_or("");
-            let lines: Vec<&str> = content.lines().collect();
-            let line = if (position.line as usize) < lines.len() {
-                lines[position.line as usize]
-            } else {
-                ""
-            };
-            let before_cursor = &line[..std::cmp::min(position.character as usize, line.len())];
-
-            // Find the trigger context for text replacement
-            if let Some(pos) = before_cursor.rfind(":snip:") {
-                before_cursor[pos..].to_string()
-            } else if let Some(pos) = before_cursor.rfind(":s:") {
-                before_cursor[pos..].to_string()
-            } else if let Some(pos) = before_cursor.rfind(':') {
-                before_cursor[pos..].to_string()
-            } else {
-                String::new()
-            }
-        }; // Guard is dropped here
-
+        // The trigger context is just the word we extracted
+        let trigger_context = query.clone().unwrap_or_default();
         debug!("Trigger context: '{}'", trigger_context);
 
         match self.fetch_snippets(query.as_deref()).await {
