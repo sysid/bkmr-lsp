@@ -40,6 +40,8 @@ pub struct BkmrLspBackend {
     config: BkmrConfig,
     /// Cache of document contents to extract prefixes
     document_cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
+    /// Cache of document language IDs for filetype-based filtering
+    language_cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl BkmrLspBackend {
@@ -49,6 +51,9 @@ impl BkmrLspBackend {
             client,
             config: BkmrConfig::default(),
             document_cache: std::sync::Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
+            language_cache: std::sync::Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
         }
@@ -98,9 +103,15 @@ impl BkmrLspBackend {
         None
     }
 
+    /// Get the language ID for a document URI
+    fn get_language_id(&self, uri: &Url) -> Option<String> {
+        let cache = self.language_cache.read().ok()?;
+        cache.get(&uri.to_string()).cloned()
+    }
+
     /// Execute bkmr command and return parsed snippets
     #[instrument(skip(self))]
-    async fn fetch_snippets(&self, prefix: Option<&str>) -> Result<Vec<BkmrSnippet>> {
+    async fn fetch_snippets(&self, prefix: Option<&str>, language_id: Option<&str>) -> Result<Vec<BkmrSnippet>> {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
@@ -110,6 +121,15 @@ impl BkmrLspBackend {
             "--limit".to_string(),
             self.config.max_completions.to_string(),
         ];
+
+        // Add language-based tag filter if available
+        if let Some(lang) = language_id {
+            if !lang.trim().is_empty() {
+                args.push("-t".to_string());
+                args.push(lang.to_string());
+                debug!("Using language filter: {}", lang);
+            }
+        }
 
         // Add search term if prefix is provided and not empty
         if let Some(p) = prefix {
@@ -444,11 +464,16 @@ impl LanguageServer for BkmrLspBackend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
         let content = params.text_document.text;
+        let language_id = params.text_document.language_id;
 
-        debug!("Document opened: {}", uri);
+        debug!("Document opened: {} (language: {})", uri, language_id);
 
         if let Ok(mut cache) = self.document_cache.write() {
-            cache.insert(uri, content);
+            cache.insert(uri.clone(), content);
+        }
+
+        if let Ok(mut lang_cache) = self.language_cache.write() {
+            lang_cache.insert(uri, language_id);
         }
     }
 
@@ -482,6 +507,10 @@ impl LanguageServer for BkmrLspBackend {
 
         if let Ok(mut cache) = self.document_cache.write() {
             cache.remove(&uri);
+        }
+
+        if let Ok(mut lang_cache) = self.language_cache.write() {
+            lang_cache.remove(&uri);
         }
     }
 
@@ -519,11 +548,15 @@ impl LanguageServer for BkmrLspBackend {
         let query = self.extract_snippet_query(uri, position);
         debug!("Extracted snippet query: {:?}", query);
 
+        // Get the language ID for filetype-based filtering
+        let language_id = self.get_language_id(uri);
+        debug!("Document language ID: {:?}", language_id);
+
         // The trigger context is just the word we extracted
         let trigger_context = query.clone().unwrap_or_default();
         debug!("Trigger context: '{}'", trigger_context);
 
-        match self.fetch_snippets(query.as_deref()).await {
+        match self.fetch_snippets(query.as_deref(), language_id.as_deref()).await {
             Ok(snippets) => {
                 let query_str = query.as_deref().unwrap_or(""); // Clean query: "aws", not ":aws"
                 let completion_items: Vec<CompletionItem> = snippets
@@ -541,11 +574,15 @@ impl LanguageServer for BkmrLspBackend {
                     query
                 );
 
-                for (i, item) in completion_items.iter().enumerate() {
+                // Only log first few items to reduce noise in LSP logs
+                for (i, item) in completion_items.iter().enumerate().take(3) {
                     debug!(
                         "Item {}: label='{}', sort_text={:?}",
                         i, item.label, item.sort_text
                     );
+                }
+                if completion_items.len() > 3 {
+                    debug!("... and {} more items", completion_items.len() - 3);
                 }
 
                 Ok(Some(CompletionResponse::List(CompletionList {

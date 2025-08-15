@@ -4,7 +4,12 @@ Language Server Protocol (LSP) implementation for [bkmr](https://github.com/sysi
 
 ## Overview
 
-bkmr-lsp provides trigger-based snippet completion for bkmr snippets in any LSP-compatible editor. Type `:` followed by letters to get snippet completions. Snippets are automatically interpolated, delivering processed content rather than raw templates. Additionally, it provides LSP commands for filepath comment insertion with automatic language detection.
+bkmr-lsp provides trigger-based snippet completion for bkmr snippets in any LSP-compatible editor. Type `:` followed by letters to get snippet completions. Snippets are automatically interpolated, delivering processed content rather than raw templates. 
+
+**Key Features:**
+- **Language-aware filtering**: Snippets are filtered by file type (e.g., Rust files get only Rust snippets)
+- **Automatic interpolation**: Templates are processed using bkmr's `--interpolate` flag
+- **LSP commands**: Filepath comment insertion with automatic language detection
 
 ## Requirements
 
@@ -109,14 +114,31 @@ Snippets with templates are automatically processed:
 # Completion inserts: /Users/username/project
 ```
 
-### Filtering
+### Language-Based Filtering
 
-Use prefixes after `:` to filter completions:
+The LSP server automatically filters snippets based on the file type (language ID) provided by your editor:
 
-- Type `:js` to show JavaScript snippets
-- Type `:py` to show Python snippets  
+**Automatic filtering:**
+- **Rust files** (`.rs`): Only shows snippets tagged with `rust`
+- **Python files** (`.py`): Only shows snippets tagged with `python`
+- **JavaScript files** (`.js`): Only shows snippets tagged with `javascript`
+- **And more**: Supports all LSP language identifiers
+
+**Setting up language-specific snippets:**
+```bash
+# Tag snippets with language identifiers
+bkmr add -t rust -t _snip_ 'fn main() { println!("Hello"); }' 'Rust main function'
+bkmr add -t python -t _snip_ 'if __name__ == "__main__":' 'Python main guard'  
+bkmr add -t javascript -t _snip_ 'console.log("Hello");' 'JS console log'
+```
+
+### Text-Based Filtering
+
+Use prefixes after `:` for additional text-based filtering:
+
 - Type `:aws` to show AWS-related snippets
-- Partial matches filter by snippet titles
+- Type `:config` to show configuration snippets
+- Partial matches filter by snippet titles and content
 
 ### LSP Commands
 
@@ -182,22 +204,91 @@ cargo build
 cargo test
 ```
 
-### Logging
+### Testing Language Filtering
 
-Set `RUST_LOG=debug` for detailed logging:
+A test script is provided to demonstrate filetype extraction:
 
 ```bash
-RUST_LOG=debug bkmr-lsp 2>lsp.log
+# Build and install LSP server
+make install-debug
+
+# Run filetype extraction test
+./scripts/test_filetype_extraction.py
 ```
+
+This script opens different file types and shows how the server extracts and uses the `language_id` for filtering.
+
+### Logging
+
+The LSP server automatically adjusts log levels based on the execution context:
+
+- **LSP mode** (when run by LSP clients): Defaults to ERROR level to avoid noise in client logs
+- **Terminal mode** (when run manually): Defaults to WARN level for development
+
+**Manual log level control:**
+
+```bash
+# Enable debug logging (will appear as ERRORs in LSP client logs)
+RUST_LOG=debug bkmr-lsp
+
+# Completely disable logging
+BKMR_LSP_NO_LOG=1 bkmr-lsp
+
+# Log to file for debugging
+RUST_LOG=debug bkmr-lsp 2>/tmp/bkmr-lsp.log
+```
+
+**Debug log entries for language filtering:**
+```
+Document opened: file:///example.rs (language: rust)
+Document language ID: Some("rust")
+Using language filter: rust
+```
+
+**Note:** LSP clients (like Neovim) treat all stderr output as errors, so debug messages will appear under ERROR in client logs. This is normal LSP behavior.
+
+## Implementation Details
+
+### Language Filtering Architecture
+
+The LSP server implements language-aware filtering through:
+
+1. **Language ID Capture**: When a document is opened via `textDocument/didOpen`, the server captures and caches the `language_id` field from the `TextDocumentItem`
+
+2. **Filtering Logic**: During completion requests, the server adds the cached language ID as a tag filter to the bkmr search command:
+   ```bash
+   # Without language filtering:
+   bkmr search --json --interpolate -t _snip_ --limit 50 metadata:query*
+   
+   # With language filtering (e.g., for Rust files):
+   bkmr search --json --interpolate -t _snip_ --limit 50 -t rust metadata:query*
+   ```
+
+3. **Cache Management**: Language IDs are stored per document URI and cleaned up when documents are closed
+
+### Common Language Identifiers
+
+LSP clients typically provide these language identifiers:
+- `rust` - Rust files (.rs)
+- `python` - Python files (.py)
+- `javascript` - JavaScript files (.js)
+- `typescript` - TypeScript files (.ts)
+- `java` - Java files (.java)
+- `c` - C files (.c)
+- `cpp` - C++ files (.cpp, .cc, .cxx)
+- `go` - Go files (.go)
+- `shell` - Shell scripts (.sh, .bash)
+- And many more...
 
 ## Protocol Support
 
 - **LSP Version**: 3.17
 - **Features**: 
-  - Text document completion with `:` trigger character
-  - Template interpolation
-  - Live snippet fetching
-  - LSP commands for filepath comment insertion
+  - Text document completion with manual triggering
+  - Language-aware snippet filtering using `textDocument/didOpen` language ID
+  - Template interpolation via bkmr `--interpolate` flag
+  - Live snippet fetching with bkmr CLI integration
+  - LSP commands for filepath comment insertion with language detection
 
 ## Contributing
 
