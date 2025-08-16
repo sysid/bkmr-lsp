@@ -31,7 +31,7 @@ impl Default for BkmrConfig {
 }
 
 /// Represents a bkmr snippet from JSON output
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct BkmrSnippet {
     pub id: i32,
     pub title: String,
@@ -352,14 +352,14 @@ impl BkmrLspBackend {
 
         let mut completion_item = CompletionItem {
             label: label.clone(),
-            kind: Some(CompletionItemKind::TEXT),  // TODO: Snippet
+            kind: Some(CompletionItemKind::SNIPPET),  // TODO: Snippet, TEXT
             detail: Some(format!("bkmr snippet")),
             documentation: Some(Documentation::String(if snippet_content.len() > 500 {
                 format!("{}...", &snippet_content[..500])
             } else {
                 snippet_content.clone()
             })),
-            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),  // TODO: Snippet
+            insert_text_format: Some(InsertTextFormat::SNIPPET),  // TODO: Snippet, PLAIN_TEXT
             filter_text: Some(label.clone()),
             sort_text: Some(label.clone()),
             ..Default::default()
@@ -1090,4 +1090,22 @@ impl LanguageServer for BkmrLspBackend {
 
         Ok(None)
     }
+}
+
+/// Start a bkmr-lsp server with given input/output streams
+/// This function is used by tests to spawn a real LSP server for testing
+pub async fn start_server<I, O>(read: I, write: O) 
+where
+    I: tokio::io::AsyncRead + Unpin,
+    O: tokio::io::AsyncWrite,
+{
+    use tower_lsp::{LspService, Server};
+    
+    // Create the LSP service
+    let (service, socket) = LspService::new(|client| {
+        BkmrLspBackend::new(client)
+    });
+    
+    // Start the server with the provided streams
+    Server::new(read, write, socket).serve(service).await;
 }

@@ -3,7 +3,7 @@
 use std::process::Stdio;
 use tokio::process::Command;
 
-#[tokio::test]
+#[test_log::test(tokio::test)]
 async fn test_bkmr_interpolation_integration() {
     // This test verifies that bkmr-lsp correctly uses the --interpolate flag
     // and receives processed content instead of raw templates
