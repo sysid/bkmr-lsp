@@ -43,6 +43,8 @@ mod tests {
 let x = 5; // End of line comment"#;
         
         let python_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "python", &uri);
+        println!("Input: {:?}", rust_content);
+        println!("Output: {:?}", python_result);
         assert!(python_result.contains("# This is a line comment"));
         assert!(python_result.contains("    # Indented comment"));
         assert!(python_result.contains("let x = 5; # End of line comment"));
@@ -216,5 +218,36 @@ fn {{ function_name }}() {
             query,
             Some(r#"(tags:typescript AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
         );
+    }
+
+    #[test]
+    fn test_multiline_universal_snippet_processing() {
+        // Test the exact content from the failing snippet
+        let uri = Url::parse("file:///test/example.py").unwrap();
+        let multiline_content = "{% raw %}\n// Fold description {{{ //\n\nContent\n// }}} Fold description //\n$0\n{% endraw %}";
+        
+        println!("Input content: {:?}", multiline_content);
+        println!("Input lines: {:?}", multiline_content.split('\n').collect::<Vec<_>>());
+        
+        let result = BkmrLspBackend::translate_rust_patterns_static(multiline_content, "python", &uri);
+        
+        println!("Output content: {:?}", result);
+        println!("Output lines: {:?}", result.split('\n').collect::<Vec<_>>());
+        
+        // Check that newlines are preserved
+        let input_line_count = multiline_content.matches('\n').count();
+        let output_line_count = result.matches('\n').count();
+        
+        println!("Input newlines: {}, Output newlines: {}", input_line_count, output_line_count);
+        
+        // Should preserve the same number of newlines
+        assert_eq!(input_line_count, output_line_count, "Number of newlines should be preserved");
+        
+        // Should contain translated comments (preserving the // at the end)
+        assert!(result.contains("# Fold description {{{ //"));
+        assert!(result.contains("# }}} Fold description //"));
+        
+        // Should preserve the empty line between first comment and "Content"
+        assert!(result.contains("\n\nContent\n"));
     }
 }

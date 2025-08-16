@@ -151,6 +151,49 @@ impl BkmrLspBackend {
         Some(r#"tags:"_snip_""#.to_string())
     }
 
+    /// Process content line by line to preserve newlines properly
+    fn translate_rust_patterns_line_by_line(content: &str, target_lang: &LanguageInfo) -> String {
+        let lines: Vec<&str> = content.split('\n').collect();
+        let mut processed_lines = Vec::new();
+        
+        for line in lines {
+            let mut processed_line = line.to_string();
+            
+            // Process line comments (//)
+            if let Some(target_comment) = &target_lang.line_comment {
+                // Start of line comments
+                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").unwrap().captures(line) {
+                    processed_line = format!("{}{} {}", &captures[1], target_comment, &captures[2]);
+                }
+                // End of line comments (after code)
+                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").unwrap().captures(line) {
+                    processed_line = format!("{}{}{} {}", &captures[1], &captures[2], target_comment, &captures[3]);
+                }
+            } else if let Some((block_start, block_end)) = &target_lang.block_comment {
+                // For languages without line comments, use block comments
+                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").unwrap().captures(line) {
+                    processed_line = format!("{}{} {} {}", &captures[1], block_start, &captures[2], block_end);
+                }
+                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").unwrap().captures(line) {
+                    processed_line = format!("{}{}{} {} {}", &captures[1], &captures[2], block_start, &captures[3], block_end);
+                }
+            }
+            
+            // Process indentation
+            if target_lang.indent_char != "    " {
+                if let Some(captures) = regex::Regex::new(r"^( {4})+").unwrap().captures(&processed_line) {
+                    let rust_indent_count = captures[0].len() / 4;
+                    let new_indent = target_lang.indent_char.repeat(rust_indent_count);
+                    processed_line = processed_line.replacen(&captures[0], &new_indent, 1);
+                }
+            }
+            
+            processed_lines.push(processed_line);
+        }
+        
+        processed_lines.join("\n")
+    }
+
     /// Public static version for testing
     #[cfg(test)]
     pub fn build_snippet_fts_query_for_test(language_id: Option<&str>) -> Option<String> {
@@ -246,49 +289,13 @@ impl BkmrLspBackend {
     /// Translate Rust syntax patterns in universal snippets to target language
     pub fn translate_rust_patterns(&self, content: &str, language_id: &str, uri: &Url) -> String {
         let target_lang = self.get_language_info(language_id);
-        let mut processed_content = content.to_string();
 
         debug!("Translating Rust patterns for language: {}", language_id);
+        debug!("Input content: {:?}", content);
+        debug!("Content length: {} bytes", content.len());
 
-        // Replace Rust line comments (//) with target language line comments
-        if let Some(target_comment) = &target_lang.line_comment {
-            // Match // at start of line or after whitespace - use MULTILINE flag
-            let line_comment_regex = regex::RegexBuilder::new(r"^(\s*)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = line_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{} {}", &caps[1], target_comment, &caps[2])
-            }).to_string();
-            
-            // Match // at end of line (after code) - use MULTILINE flag
-            let eol_comment_regex = regex::RegexBuilder::new(r"(\S+)(\s+)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = eol_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{} {}", &caps[1], &caps[2], target_comment, &caps[3])
-            }).to_string();
-        } else if let Some((block_start, block_end)) = &target_lang.block_comment {
-            // For languages without line comments, replace // with block comments
-            // Handle start-of-line comments
-            let line_comment_regex = regex::RegexBuilder::new(r"^(\s*)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = line_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{} {} {}", &caps[1], block_start, &caps[2], block_end)
-            }).to_string();
-            
-            // Handle end-of-line comments
-            let eol_comment_regex = regex::RegexBuilder::new(r"(\S+)(\s+)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = eol_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{} {} {}", &caps[1], &caps[2], block_start, &caps[3], block_end)
-            }).to_string();
-        }
+        // Use line-by-line processing to preserve newlines
+        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang);
 
         // Replace Rust block comments (/* */) with target language block comments
         if let Some((target_start, target_end)) = &target_lang.block_comment {
@@ -301,19 +308,6 @@ impl BkmrLspBackend {
             }).to_string();
         }
 
-        // Replace Rust indentation (4 spaces) with target language indentation
-        // Detect lines that start with 4 spaces and replace with target indentation
-        if target_lang.indent_char != "    " {
-            let indent_regex = regex::RegexBuilder::new(r"^( {4})+")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = indent_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                let rust_indent_count = caps[0].len() / 4; // Number of 4-space indents
-                target_lang.indent_char.repeat(rust_indent_count)
-            }).to_string();
-        }
-
         // Add file name replacement for simple relative path
         if processed_content.contains("{{ filename }}") {
             let filename = uri.path().split('/').last().unwrap_or("untitled");
@@ -321,6 +315,8 @@ impl BkmrLspBackend {
         }
 
         debug!("Rust pattern translation complete");
+        debug!("Final content: {:?}", processed_content);
+        debug!("Final content length: {} bytes", processed_content.len());
         processed_content
     }
 
@@ -336,7 +332,10 @@ impl BkmrLspBackend {
         // Check if this is a universal snippet and process accordingly
         let snippet_content = if snippet.tags.contains(&"universal".to_string()) {
             debug!("Processing universal snippet: {}", snippet.title);
-            self.translate_rust_patterns(&snippet.url, language_id, uri)
+            debug!("Original content: {:?}", snippet.url);
+            let translated = self.translate_rust_patterns(&snippet.url, language_id, uri);
+            debug!("Translated content: {:?}", translated);
+            translated
         } else {
             // Regular snippet - use content as-is
             snippet.url.clone()
@@ -567,46 +566,11 @@ impl BkmrLspBackend {
     #[cfg(test)]
     pub fn translate_rust_patterns_static(content: &str, language_id: &str, uri: &Url) -> String {
         let target_lang = Self::get_language_info_static(language_id);
-        let mut processed_content = content.to_string();
+        
+        // Use line-by-line processing to preserve newlines
+        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang);
 
-        // Replace Rust line comments (//) with target language line comments
-        if let Some(target_comment) = &target_lang.line_comment {
-            let line_comment_regex = regex::RegexBuilder::new(r"^(\s*)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = line_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{} {}", &caps[1], target_comment, &caps[2])
-            }).to_string();
-            
-            let eol_comment_regex = regex::RegexBuilder::new(r"(\S+)(\s+)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = eol_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{} {}", &caps[1], &caps[2], target_comment, &caps[3])
-            }).to_string();
-        } else if let Some((block_start, block_end)) = &target_lang.block_comment {
-            // Handle start-of-line comments
-            let line_comment_regex = regex::RegexBuilder::new(r"^(\s*)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = line_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{} {} {}", &caps[1], block_start, &caps[2], block_end)
-            }).to_string();
-            
-            // Handle end-of-line comments
-            let eol_comment_regex = regex::RegexBuilder::new(r"(\S+)(\s+)//\s*(.*)$")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = eol_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{} {} {}", &caps[1], &caps[2], block_start, &caps[3], block_end)
-            }).to_string();
-        }
-
-        // Replace Rust block comments
+        // Handle block comments (these can span multiple lines)
         if let Some((target_start, target_end)) = &target_lang.block_comment {
             let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
                 .dot_matches_new_line(true)
@@ -614,18 +578,6 @@ impl BkmrLspBackend {
                 .unwrap();
             processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
                 format!("{}{}{}", target_start, &caps[1], target_end)
-            }).to_string();
-        }
-
-        // Replace indentation
-        if target_lang.indent_char != "    " {
-            let indent_regex = regex::RegexBuilder::new(r"^( {4})+")
-                .multi_line(true)
-                .build()
-                .unwrap();
-            processed_content = indent_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                let rust_indent_count = caps[0].len() / 4;
-                target_lang.indent_char.repeat(rust_indent_count)
             }).to_string();
         }
 
