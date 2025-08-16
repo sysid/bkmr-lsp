@@ -131,35 +131,70 @@ impl BkmrLspBackend {
         cache.get(&uri.to_string()).cloned()
     }
 
+    /// Build FTS query for snippets that includes both language-specific and universal snippets
+    fn build_snippet_fts_query(&self, language_id: Option<&str>) -> Option<String> {
+        Self::build_snippet_fts_query_static(language_id)
+    }
+
+    /// Static version of FTS query builder 
+    fn build_snippet_fts_query_static(language_id: Option<&str>) -> Option<String> {
+        if let Some(lang) = language_id {
+            if !lang.trim().is_empty() {
+                // Query for either (language AND _snip_) OR (universal AND _snip_)
+                return Some(format!(
+                    r#"(tags:{} AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#,
+                    lang
+                ));
+            }
+        }
+        // Fallback: just get all snippets with _snip_ tag
+        Some(r#"tags:"_snip_""#.to_string())
+    }
+
+    /// Public static version for testing
+    #[cfg(test)]
+    pub fn build_snippet_fts_query_for_test(language_id: Option<&str>) -> Option<String> {
+        Self::build_snippet_fts_query_static(language_id)
+    }
+
     /// Execute bkmr command and return parsed snippets
     #[instrument(skip(self))]
     async fn fetch_snippets(&self, prefix: Option<&str>, language_id: Option<&str>) -> Result<Vec<BkmrSnippet>> {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
-            "--interpolate".to_string(), // ← ADD THIS: Always use interpolation
-            "--ntags-prefix".to_string(),
-            "_snip_".to_string(),
+            "--interpolate".to_string(), // Always use interpolation
             "--limit".to_string(),
             self.config.max_completions.to_string(),
         ];
 
-        // Add language-based tag filter if available
-        if let Some(lang) = language_id {
-            if !lang.trim().is_empty() {
-                args.push("-t".to_string());
-                args.push(lang.to_string());
-                debug!("Using language filter: {}", lang);
-            }
+        // Build FTS query that combines language-specific and universal snippets
+        let mut fts_parts = Vec::new();
+        
+        // Add language + universal snippet query
+        if let Some(snippet_query) = self.build_snippet_fts_query(language_id) {
+            fts_parts.push(format!("({})", snippet_query));
+            debug!("Using snippet query: {}", snippet_query);
         }
 
         // Add search term if prefix is provided and not empty
         if let Some(p) = prefix {
             if !p.trim().is_empty() {
                 // Use title prefix search for better snippet matching
-                args.push(format!("metadata:{}*", p));
+                fts_parts.push(format!("metadata:{}*", p));
                 debug!("Using search prefix: {}", p);
             }
+        }
+
+        // Combine all FTS parts with AND logic
+        if !fts_parts.is_empty() {
+            let fts_query = if fts_parts.len() == 1 {
+                fts_parts.into_iter().next().unwrap()
+            } else {
+                fts_parts.join(" AND ")
+            };
+            args.push(fts_query);
+            debug!("Final FTS query: {}", args.last().unwrap());
         }
 
         debug!("Executing bkmr with args: {:?}", args);

@@ -181,4 +181,40 @@ fn {{ function_name }}() {
         assert!(result.contains("# Comment2"));
         assert!(result.contains("    # Comment3"));
     }
+
+    #[test]
+    fn test_fts_query_builder() {
+        // Test with specific language
+        let query = BkmrLspBackend::build_snippet_fts_query_for_test(Some("markdown"));
+        assert_eq!(
+            query,
+            Some(r#"(tags:markdown AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+        );
+        
+        // Test with rust language
+        let query = BkmrLspBackend::build_snippet_fts_query_for_test(Some("rust"));
+        assert_eq!(
+            query,
+            Some(r#"(tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+        );
+        
+        // Test with empty language
+        let query = BkmrLspBackend::build_snippet_fts_query_for_test(Some(""));
+        assert_eq!(query, Some(r#"tags:"_snip_""#.to_string()));
+        
+        // Test with whitespace-only language
+        let query = BkmrLspBackend::build_snippet_fts_query_for_test(Some("   "));
+        assert_eq!(query, Some(r#"tags:"_snip_""#.to_string()));
+        
+        // Test with None language
+        let query = BkmrLspBackend::build_snippet_fts_query_for_test(None);
+        assert_eq!(query, Some(r#"tags:"_snip_""#.to_string()));
+        
+        // Test with complex language names
+        let query = BkmrLspBackend::build_snippet_fts_query_for_test(Some("typescript"));
+        assert_eq!(
+            query,
+            Some(r#"(tags:typescript AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+        );
+    }
 }
