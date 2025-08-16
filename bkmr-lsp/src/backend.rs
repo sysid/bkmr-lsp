@@ -162,26 +162,26 @@ impl BkmrLspBackend {
             // Process line comments (//)
             if let Some(target_comment) = &target_lang.line_comment {
                 // Start of line comments
-                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").unwrap().captures(line) {
+                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex").captures(line) {
                     processed_line = format!("{}{} {}", &captures[1], target_comment, &captures[2]);
                 }
                 // End of line comments (after code)
-                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").unwrap().captures(line) {
+                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex").captures(line) {
                     processed_line = format!("{}{}{} {}", &captures[1], &captures[2], target_comment, &captures[3]);
                 }
             } else if let Some((block_start, block_end)) = &target_lang.block_comment {
                 // For languages without line comments, use block comments
-                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").unwrap().captures(line) {
+                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex").captures(line) {
                     processed_line = format!("{}{} {} {}", &captures[1], block_start, &captures[2], block_end);
                 }
-                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").unwrap().captures(line) {
+                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex").captures(line) {
                     processed_line = format!("{}{}{} {} {}", &captures[1], &captures[2], block_start, &captures[3], block_end);
                 }
             }
             
             // Process indentation
             if target_lang.indent_char != "    " {
-                if let Some(captures) = regex::Regex::new(r"^( {4})+").unwrap().captures(&processed_line) {
+                if let Some(captures) = regex::Regex::new(r"^( {4})+").expect("valid indent regex").captures(&processed_line) {
                     let rust_indent_count = captures[0].len() / 4;
                     let new_indent = target_lang.indent_char.repeat(rust_indent_count);
                     processed_line = processed_line.replacen(&captures[0], &new_indent, 1);
@@ -232,12 +232,12 @@ impl BkmrLspBackend {
         // Combine all FTS parts with AND logic
         if !fts_parts.is_empty() {
             let fts_query = if fts_parts.len() == 1 {
-                fts_parts.into_iter().next().unwrap()
+                fts_parts.into_iter().next().expect("at least one FTS part")
             } else {
                 fts_parts.join(" AND ")
             };
             args.push(fts_query);
-            debug!("Final FTS query: {}", args.last().unwrap());
+            debug!("Final FTS query: {}", args.last().expect("FTS query in args"));
         }
 
         debug!("Executing bkmr with args: {:?}", args);
@@ -302,7 +302,7 @@ impl BkmrLspBackend {
             let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
                 .dot_matches_new_line(true)
                 .build()
-                .unwrap();
+                .expect("compile block comment regex");
             processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
                 format!("{}{}{}", target_start, &caps[1], target_end)
             }).to_string();
@@ -575,7 +575,7 @@ impl BkmrLspBackend {
             let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
                 .dot_matches_new_line(true)
                 .build()
-                .unwrap();
+                .expect("compile block comment regex");
             processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
                 format!("{}{}{}", target_start, &caps[1], target_end)
             }).to_string();

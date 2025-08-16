@@ -1,4 +1,4 @@
-use bkmr_lsp::BkmrLspBackend;
+use bkmr_lsp::backend::BkmrLspBackend;
 use std::panic;
 use tower_lsp::{LspService, Server};
 use tracing_subscriber::EnvFilter;

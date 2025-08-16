@@ -1,5 +1,229 @@
 # Development Guide
 
+## Architecture Overview
+
+The bkmr-lsp project follows **Clean Architecture principles** with clear separation of concerns, dependency inversion, and layered design. This architecture provides maintainability, testability, and flexibility.
+
+### Clean Architecture Layers
+
+#### Domain Layer (`src/domain/`)
+Pure business logic with no external dependencies:
+
+- **`snippet.rs`**: Core `Snippet` domain model and `BkmrSnippet` compatibility type
+- **`language.rs`**: `LanguageInfo` and `LanguageRegistry` for language-specific information
+- **`completion.rs`**: `CompletionQuery`, `CompletionContext`, and `SnippetFilter` models
+
+#### Repository Layer (`src/repositories/`)
+Data access abstraction using the Repository pattern:
+
+- **`snippet_repository.rs`**: `SnippetRepository` trait defining data access interface
+- **`bkmr_repository.rs`**: `BkmrRepository` implementing actual bkmr CLI integration
+- **`mock_repository.rs`**: `MockSnippetRepository` for testing without external dependencies
+
+#### Service Layer (`src/services/`)
+Business logic orchestration and domain operations:
+
+- **`document_service.rs`**: `DocumentService` managing document state and query extraction
+- **`completion_service.rs`**: `CompletionService` handling completion logic with repository injection
+- **`language_translator.rs`**: `LanguageTranslator` converting Rust patterns to target languages
+- **`command_service.rs`**: `CommandService` handling LSP command execution
+
+#### Infrastructure Layer (`src/backend.rs`)
+LSP protocol implementation and external integrations:
+
+- **`BkmrLspBackend`**: Main LSP server with dependency injection
+- **`BkmrConfig`**: Configuration management
+- **LSP Protocol Handlers**: `initialize`, `completion`, `execute_command`, etc.
+
+### Key Architecture Principles
+
+#### Dependency Inversion
+- Services depend on repository traits, not concrete implementations
+- Enables easy testing with mock repositories
+- Allows swapping implementations without changing business logic
+
+#### Error Handling
+- Consistent use of `anyhow::Result` with `.context()` for error chain building
+- Prefer `.expect()` over `.unwrap()` with descriptive messages
+- Structured error propagation through all layers
+
+#### Async/Await
+- Full tokio async support throughout the stack
+- Non-blocking I/O for external CLI calls and LSP communication
+- Proper async trait usage with `#[async_trait]`
+
+#### Dependency Injection
+- Constructor injection pattern for services
+- Repository instances injected into services at creation time
+- Test-friendly design with configurable dependencies
+
+### File Structure
+
+```
+bkmr-lsp/                          # Main Rust project
+├── src/                           # Source code
+│   ├── main.rs                    # Server entry point
+│   ├── backend.rs                 # LSP implementation (Infrastructure layer)
+│   ├── lib.rs                     # Module exports
+│   ├── domain/                    # Domain layer (business models)
+│   │   ├── mod.rs                 # Domain module exports
+│   │   ├── snippet.rs             # Snippet domain model
+│   │   ├── language.rs            # Language information registry
+│   │   └── completion.rs          # Completion query models
+│   ├── repositories/              # Repository layer (data access)
+│   │   ├── mod.rs                 # Repository module exports
+│   │   ├── snippet_repository.rs  # Repository trait definition
+│   │   ├── bkmr_repository.rs     # bkmr CLI implementation
+│   │   └── mock_repository.rs     # Testing implementation
+│   └── services/                  # Service layer (business logic)
+│       ├── mod.rs                 # Service module exports
+│       ├── document_service.rs    # Document state management
+│       ├── completion_service.rs  # Completion orchestration
+│       ├── language_translator.rs # Rust pattern translation
+│       └── command_service.rs     # LSP command handling
+├── tests/                         # Integration and unit tests
+├── Cargo.toml                     # Rust project config
+└── target/                        # Build artifacts
+
+vim-bkmr-lsp/                      # Vim plugin
+├── plugin/bkmr_lsp.vim           # Vim integration
+└── README.md                      # Plugin documentation
+
+scripts/                           # Development tools
+├── test_lsp.py                    # Python LSP test client
+├── test_lsp.sh                    # Shell LSP testing
+└── test_lsp2.sh                   # Additional LSP tests
+```
+
+### Implementation Patterns
+
+#### Service Creation with Dependency Injection
+```rust
+// Repository configuration
+let repository_config = RepositoryConfig::from(config.clone());
+let repository: Arc<dyn SnippetRepository> = Arc::new(BkmrRepository::new(repository_config));
+
+// Service creation with injected dependencies
+let document_service = Arc::new(DocumentService::new());
+let completion_service = Arc::new(CompletionService::new(repository));
+
+// Backend with injected services
+Self {
+    client,
+    config,
+    document_service,
+    completion_service,
+}
+```
+
+#### Error Handling Pattern
+```rust
+// Service layer error handling
+async fn get_completions(&self, context: &CompletionContext) -> Result<Vec<CompletionItem>> {
+    let snippets = self.repository
+        .search_snippets(&filter)
+        .await
+        .context("search snippets from repository")?;
+
+    let completion_items = self.process_snippets(snippets, context)
+        .context("process snippets into completion items")?;
+
+    Ok(completion_items)
+}
+```
+
+#### Repository Pattern Implementation
+```rust
+#[async_trait]
+pub trait SnippetRepository: Send + Sync + std::fmt::Debug {
+    async fn search_snippets(&self, filter: &SnippetFilter) -> Result<Vec<Snippet>>;
+    async fn health_check(&self) -> Result<()>;
+}
+
+// Real implementation
+pub struct BkmrRepository {
+    config: RepositoryConfig,
+}
+
+// Mock implementation for testing
+pub struct MockSnippetRepository {
+    snippets: Vec<Snippet>,
+}
+```
+
+### Testing Architecture
+
+#### Layer-Specific Testing
+- **Domain Layer**: Pure unit tests with no external dependencies
+- **Repository Layer**: Integration tests with real bkmr CLI + mock implementations for unit tests
+- **Service Layer**: Unit tests with mock repositories + integration tests with real repositories
+- **Infrastructure Layer**: Full LSP protocol tests with real server instances
+
+#### Test Categories by Architecture Layer
+```rust
+// Domain layer testing (pure logic)
+#[test]
+fn given_language_id_when_building_fts_query_then_includes_universal_snippets() {
+    let filter = SnippetFilter::new(Some("rust".to_string()), None, 50);
+    let query = filter.build_fts_query();
+    // Pure business logic validation
+}
+
+// Service layer testing (with dependency injection)
+#[tokio::test]
+async fn given_backend_with_mock_repository_when_completing_then_uses_repository() {
+    let repository = Arc::new(MockSnippetRepository::new().with_snippets(vec![snippet]));
+    let backend = BkmrLspBackend::with_repository(client, config, repository);
+    // Test service orchestration with controlled dependencies
+}
+
+// Infrastructure layer testing (full LSP protocol)
+#[test_log::test(tokio::test)]
+async fn test_real_lsp_completion_flow() {
+    let mut context = TestContext::new();  // Spawns real LSP server
+    context.initialize().await?;
+    // Test complete LSP protocol compliance
+}
+```
+
+### Development Workflow
+
+#### Adding New Features
+1. **Domain Models**: Define business entities in `domain/`
+2. **Repository Interface**: Extend repository traits if new data access needed
+3. **Service Logic**: Implement business operations in `services/`
+4. **Infrastructure**: Wire up LSP protocol handlers in `backend.rs`
+5. **Testing**: Add tests at each layer (unit → integration → LSP protocol)
+
+#### Refactoring Guidelines
+- Keep domain layer pure (no external dependencies)
+- Use dependency injection for testability
+- Maintain clear boundaries between layers
+- Follow consistent error handling patterns
+- Update tests at appropriate architectural levels
+
+### Architecture Benefits
+
+#### Maintainability
+- Clear separation of concerns makes code easier to understand and modify
+- Dependencies flow inward (domain ← service ← infrastructure)
+- Business logic isolated from LSP protocol details
+
+#### Testability
+- Mock repositories enable fast unit testing without external CLI
+- Dependency injection allows testing with controlled environments
+- Each layer can be tested independently
+
+#### Flexibility
+- Repository pattern allows swapping data sources
+- Service layer enables different LSP implementations
+- Domain models can support multiple protocols (LSP, CLI, web API)
+
+#### Code Quality
+- Consistent error handling prevents silent failures
+- Async/await eliminates blocking operations
+- Strong typing with comprehensive error contexts
+
 ## Server Output and Logging
 
 The LSP server output goes to different locations depending on how you run it:
