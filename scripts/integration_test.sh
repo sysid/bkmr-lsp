@@ -1,10 +1,42 @@
 #!/bin/bash
+# ============================================================================
+# integration_test.sh - Complete LSP Server Integration Testing Pipeline
+# ============================================================================
+# 
+# Purpose: Comprehensive testing of bkmr-lsp server functionality including:
+#   - Project building and compilation
+#   - Unit and integration test execution  
+#   - bkmr CLI availability and snippet validation
+#   - LSP protocol communication testing
+#   - Python and raw LSP message testing capabilities
+#
+# Usage:
+#   ./scripts/integration_test.sh [test_mode]
+#
+# Test Modes:
+#   raw    - Test with raw LSP protocol messages
+#   python - Test with Python LSP client (default)
+#   both   - Run both raw and Python tests
+#
+# Examples:
+#   ./scripts/integration_test.sh         # Python client test (default)
+#   ./scripts/integration_test.sh raw     # Raw LSP message test 
+#   ./scripts/integration_test.sh both    # Both test methods
+#
+# Prerequisites:
+#   - Rust toolchain installed
+#   - bkmr CLI tool installed with snippets tagged as '_snip_'
+#   - jq command for JSON processing (optional)
+#   - Python 3 for Python client testing
+# ============================================================================
+
 set -e
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
+BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
 # Function to send LSP message with proper headers
@@ -101,24 +133,24 @@ check_bkmr() {
     echo -e "${GREEN}bkmr found${NC}"
 
     # Check if we have any snippets
-    echo "Checking for snippets..."
-    SNIPPET_COUNT=$(bkmr search --json -t _snip_ 2>/dev/null | jq '. | length' 2>/dev/null || echo "0")
+    echo -e "${YELLOW}Checking for bkmr snippets...${NC}"
+    SNIPPET_COUNT=$(bkmr search --json --ntags-prefix _snip_ 2>/dev/null | jq '. | length' 2>/dev/null || echo "0")
 
     if [ "$SNIPPET_COUNT" -eq 0 ]; then
-        echo -e "${YELLOW}No snippets found. Adding a test snippet...${NC}"
+        echo -e "${YELLOW}\u26a0\ufe0f  No snippets found. Adding a test snippet...${NC}"
         bkmr add "console.log('Hello from bkmr-lsp!');" test,javascript --type snip --title "LSP Test Snippet" || {
-            echo -e "${RED}Failed to add test snippet${NC}"
+            echo -e "${RED}\u274c Failed to add test snippet${NC}"
             return 1
         }
-        echo -e "${GREEN}Test snippet added${NC}"
+        echo -e "${GREEN}\u2713 Test snippet added successfully${NC}"
     else
-        echo -e "${GREEN}Found $SNIPPET_COUNT snippets${NC}"
+        echo -e "${GREEN}\u2713 Found $SNIPPET_COUNT snippets with _snip_ tag${NC}"
     fi
 
     # Show first few snippets
-    echo "Sample snippets:"
-    bkmr search --json -t _snip_ --limit 3 | jq -r '.[] | "  - \(.title)"' 2>/dev/null || {
-        bkmr search -t _snip_ --limit 3 | head -5
+    echo -e "${BLUE}Sample snippets:${NC}"
+    bkmr search --json --ntags-prefix _snip_ --limit 3 | jq -r '.[] | "  \u2022 \(.title)"' 2>/dev/null || {
+        bkmr search --ntags-prefix _snip_ --limit 3 | head -5 | sed 's/^/  \u2022 /'
     }
 }
 
@@ -146,13 +178,32 @@ run_tests() {
     echo -e "${GREEN}Tests passed${NC}"
 }
 
+# Display usage information
+show_usage() {
+    echo -e "${BLUE}Usage: $0 [test_mode]${NC}"
+    echo ""
+    echo "Test Modes:"
+    echo "  raw    - Test with raw LSP protocol messages"
+    echo "  python - Test with Python LSP client (default)"
+    echo "  both   - Run both raw and Python tests"
+    echo ""
+    echo "Examples:"
+    echo "  $0         # Python client test (default)"
+    echo "  $0 raw     # Raw LSP message test"
+    echo "  $0 both    # Both test methods"
+}
+
 # Main function
 main() {
-    echo -e "${GREEN}=== bkmr-lsp Testing Script ===${NC}"
+    echo -e "${GREEN}============================================================================${NC}"
+    echo -e "${GREEN}bkmr-lsp Integration Testing Pipeline${NC}"
+    echo -e "${GREEN}============================================================================${NC}"
+    echo ""
 
     # Check if we're in the right directory
     if [ ! -f "Cargo.toml" ]; then
-        echo -e "${RED}Error: Cargo.toml not found. Are you in the bkmr-lsp directory?${NC}"
+        echo -e "${RED}❌ Error: Cargo.toml not found.${NC}"
+        echo -e "${YELLOW}Please run this script from the bkmr-lsp project directory.${NC}"
         exit 1
     fi
 
@@ -181,16 +232,21 @@ main() {
             echo
             test_lsp_raw
             ;;
+        "help"|"--help"|"-h")
+            show_usage
+            exit 0
+            ;;
         *)
-            echo "Usage: $0 [raw|python|both]"
-            echo "  raw    - Test with raw LSP messages"
-            echo "  python - Test with Python client (default)"
-            echo "  both   - Run both tests"
+            echo -e "${RED}❌ Unknown test mode: $1${NC}"
+            echo ""
+            show_usage
             exit 1
             ;;
     esac
 
-    echo -e "${GREEN}=== All tests completed ===${NC}"
+    echo -e "${GREEN}============================================================================${NC}"
+    echo -e "${GREEN}✅ All integration tests completed successfully${NC}"
+    echo -e "${GREEN}============================================================================${NC}"
 }
 
 # Run main function

@@ -1,10 +1,18 @@
-// File: bkmr-lsp/src/backend.rs - Updated completion logic with trigger characters
+// File: bkmr-lsp/src/backend.rs - Word-based completion with manual triggering
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
+
+/// Language-specific information for Rust pattern translation
+#[derive(Debug, Clone)]
+pub struct LanguageInfo {
+    pub line_comment: Option<String>,
+    pub block_comment: Option<(String, String)>,
+    pub indent_char: String,
+}
 
 /// Configuration for the bkmr-lsp server
 #[derive(Debug, Clone)]
@@ -23,7 +31,7 @@ impl Default for BkmrConfig {
 }
 
 /// Represents a bkmr snippet from JSON output
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct BkmrSnippet {
     pub id: i32,
     pub title: String,
@@ -40,6 +48,8 @@ pub struct BkmrLspBackend {
     config: BkmrConfig,
     /// Cache of document contents to extract prefixes
     document_cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
+    /// Cache of document language IDs for filetype-based filtering
+    language_cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
 }
 
 impl BkmrLspBackend {
@@ -51,12 +61,16 @@ impl BkmrLspBackend {
             document_cache: std::sync::Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
+            language_cache: std::sync::Arc::new(std::sync::RwLock::new(
+                std::collections::HashMap::new(),
+            )),
         }
     }
 
-    /// Extract prefix from document at given position
+
+    /// Extract word backwards from cursor position and return both query and range
     #[instrument(skip(self))]
-    fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<String> {
+    fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<(String, Range)> {
         let cache = self.document_cache.read().ok()?;
         let content = cache.get(&uri.to_string())?;
 
@@ -73,58 +87,157 @@ impl BkmrLspBackend {
         }
 
         let before_cursor = &line[..char_pos];
+        debug!("Extracting from line: '{}', char_pos: {}, before_cursor: '{}'", line, char_pos, before_cursor);
+        
+        // Extract word backwards from cursor - find where the word starts
+        let word_start = before_cursor
+            .char_indices()
+            .rev()
+            .take_while(|(_, c)| c.is_alphanumeric() || *c == '_' || *c == '-')
+            .last()
+            .map(|(i, _)| i)
+            .unwrap_or(char_pos);
+        
+        debug!("Word boundaries: start={}, end={}", word_start, char_pos);
 
-        // Find the last ':' and check if it's a valid snippet trigger
-        if let Some(trigger_pos) = before_cursor.rfind(':') {
-            let after_trigger = &before_cursor[trigger_pos + 1..];
-
-            // Check if this might be part of a URL, time, or other non-snippet context
-            if trigger_pos > 0 {
-                let char_before = before_cursor.chars().nth(trigger_pos - 1);
-                if let Some(prev_char) = char_before {
-                    // Skip if it looks like URL (http:), time (12:30), or path (C:\)
-                    if prev_char.is_alphanumeric() || prev_char == 'p' || prev_char == 't' {
-                        return None;
-                    }
-                }
-            }
-
-            // Only proceed if:
-            // 1. No whitespace immediately after ':'
-            // 2. All characters are valid identifier chars
-            // 3. We either have content or just typed ':'
-            if !after_trigger.starts_with(char::is_whitespace)
-                && after_trigger
-                    .chars()
-                    .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-            {
-                return Some(after_trigger.to_string());
+        if word_start < char_pos {
+            let word = &before_cursor[word_start..];
+            if !word.is_empty() && word.chars().any(|c| c.is_alphanumeric()) {
+                debug!("Extracted word: '{}' from position {}", word, char_pos);
+                
+                // Create range for the word to be replaced
+                let range = Range {
+                    start: Position {
+                        line: position.line,
+                        character: word_start as u32,
+                    },
+                    end: Position {
+                        line: position.line,
+                        character: char_pos as u32,
+                    },
+                };
+                
+                return Some((word.to_string(), range));
             }
         }
 
+        debug!("No valid word found at position {}", char_pos);
         None
+    }
+
+    /// Get the language ID for a document URI
+    fn get_language_id(&self, uri: &Url) -> Option<String> {
+        let cache = self.language_cache.read().ok()?;
+        cache.get(&uri.to_string()).cloned()
+    }
+
+    /// Build FTS query for snippets that includes both language-specific and universal snippets
+    fn build_snippet_fts_query(&self, language_id: Option<&str>) -> Option<String> {
+        Self::build_snippet_fts_query_static(language_id)
+    }
+
+    /// Static version of FTS query builder 
+    fn build_snippet_fts_query_static(language_id: Option<&str>) -> Option<String> {
+        if let Some(lang) = language_id {
+            if !lang.trim().is_empty() {
+                // Query for either (language AND _snip_) OR (universal AND _snip_)
+                return Some(format!(
+                    r#"(tags:{} AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#,
+                    lang
+                ));
+            }
+        }
+        // Fallback: just get all snippets with _snip_ tag
+        Some(r#"tags:"_snip_""#.to_string())
+    }
+
+    /// Process content line by line to preserve newlines properly
+    fn translate_rust_patterns_line_by_line(content: &str, target_lang: &LanguageInfo) -> String {
+        let lines: Vec<&str> = content.split('\n').collect();
+        let mut processed_lines = Vec::new();
+        
+        for line in lines {
+            let mut processed_line = line.to_string();
+            
+            // Process line comments (//)
+            if let Some(target_comment) = &target_lang.line_comment {
+                // Start of line comments
+                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex").captures(line) {
+                    processed_line = format!("{}{} {}", &captures[1], target_comment, &captures[2]);
+                }
+                // End of line comments (after code)
+                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex").captures(line) {
+                    processed_line = format!("{}{}{} {}", &captures[1], &captures[2], target_comment, &captures[3]);
+                }
+            } else if let Some((block_start, block_end)) = &target_lang.block_comment {
+                // For languages without line comments, use block comments
+                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex").captures(line) {
+                    processed_line = format!("{}{} {} {}", &captures[1], block_start, &captures[2], block_end);
+                }
+                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex").captures(line) {
+                    processed_line = format!("{}{}{} {} {}", &captures[1], &captures[2], block_start, &captures[3], block_end);
+                }
+            }
+            
+            // Process indentation
+            if target_lang.indent_char != "    " {
+                if let Some(captures) = regex::Regex::new(r"^( {4})+").expect("valid indent regex").captures(&processed_line) {
+                    let rust_indent_count = captures[0].len() / 4;
+                    let new_indent = target_lang.indent_char.repeat(rust_indent_count);
+                    processed_line = processed_line.replacen(&captures[0], &new_indent, 1);
+                }
+            }
+            
+            processed_lines.push(processed_line);
+        }
+        
+        processed_lines.join("\n")
+    }
+
+    /// Public static version for testing
+    #[cfg(test)]
+    pub fn build_snippet_fts_query_for_test(language_id: Option<&str>) -> Option<String> {
+        Self::build_snippet_fts_query_static(language_id)
     }
 
     /// Execute bkmr command and return parsed snippets
     #[instrument(skip(self))]
-    async fn fetch_snippets(&self, prefix: Option<&str>) -> Result<Vec<BkmrSnippet>> {
+    async fn fetch_snippets(&self, prefix: Option<&str>, language_id: Option<&str>) -> Result<Vec<BkmrSnippet>> {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
-            "--interpolate".to_string(), // ← ADD THIS: Always use interpolation
-            "-t".to_string(),
-            "_snip_".to_string(),
+            "--interpolate".to_string(), // Always use interpolation
             "--limit".to_string(),
             self.config.max_completions.to_string(),
         ];
+
+        // Build FTS query that combines language-specific and universal snippets
+        let mut fts_parts = Vec::new();
+        
+        // Add language + universal snippet query
+        if let Some(snippet_query) = self.build_snippet_fts_query(language_id) {
+            fts_parts.push(format!("({})", snippet_query));
+            debug!("Using snippet query: {}", snippet_query);
+        }
 
         // Add search term if prefix is provided and not empty
         if let Some(p) = prefix {
             if !p.trim().is_empty() {
                 // Use title prefix search for better snippet matching
-                args.push(format!("metadata:{}*", p));
+                fts_parts.push(format!("metadata:{}*", p));
                 debug!("Using search prefix: {}", p);
             }
+        }
+
+        // Combine all FTS parts with AND logic
+        if !fts_parts.is_empty() {
+            let fts_query = if fts_parts.len() == 1 {
+                fts_parts.into_iter().next().expect("at least one FTS part")
+            } else {
+                fts_parts.join(" AND ")
+            };
+            args.push(fts_query);
+            debug!("Final FTS query: {}", args.last().expect("FTS query in args"));
         }
 
         debug!("Executing bkmr with args: {:?}", args);
@@ -173,51 +286,98 @@ impl BkmrLspBackend {
         Ok(snippets)
     }
 
-    /// Convert bkmr snippet to LSP completion item with trigger-aware text replacement
+    /// Translate Rust syntax patterns in universal snippets to target language
+    pub fn translate_rust_patterns(&self, content: &str, language_id: &str, uri: &Url) -> String {
+        let target_lang = self.get_language_info(language_id);
+
+        debug!("Translating Rust patterns for language: {}", language_id);
+        debug!("Input content: {:?}", content);
+        debug!("Content length: {} bytes", content.len());
+
+        // Use line-by-line processing to preserve newlines
+        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang);
+
+        // Replace Rust block comments (/* */) with target language block comments
+        if let Some((target_start, target_end)) = &target_lang.block_comment {
+            let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
+                .dot_matches_new_line(true)
+                .build()
+                .expect("compile block comment regex");
+            processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
+                format!("{}{}{}", target_start, &caps[1], target_end)
+            }).to_string();
+        }
+
+        // Add file name replacement for simple relative path
+        if processed_content.contains("{{ filename }}") {
+            let filename = uri.path().split('/').last().unwrap_or("untitled");
+            processed_content = processed_content.replace("{{ filename }}", filename);
+        }
+
+        debug!("Rust pattern translation complete");
+        debug!("Final content: {:?}", processed_content);
+        debug!("Final content length: {} bytes", processed_content.len());
+        processed_content
+    }
+
+    /// Convert bkmr snippet to LSP completion item with proper text replacement
     fn snippet_to_completion_item_with_trigger(
         &self,
         snippet: &BkmrSnippet,
-        _position: Position,
         query: &str,
+        replacement_range: Option<Range>,
+        language_id: &str,
+        uri: &Url,
     ) -> CompletionItem {
-        let original_insert_text = snippet.url.clone();
+        // Check if this is a universal snippet and process accordingly
+        let snippet_content = if snippet.tags.contains(&"universal".to_string()) {
+            debug!("Processing universal snippet: {}", snippet.title);
+            debug!("Original content: {:?}", snippet.url);
+            let translated = self.translate_rust_patterns(&snippet.url, language_id, uri);
+            debug!("Translated content: {:?}", translated);
+            translated
+        } else {
+            // Regular snippet - use content as-is
+            snippet.url.clone()
+        };
         let label = snippet.title.clone();
 
-        // Check if insertText starts with query (case insensitive)
-        let insert_matches = original_insert_text
-            .to_lowercase()
-            .starts_with(&query.to_lowercase());
-
-        // If insertText doesn't match query, prefix it with the query (vim lsp workaround)
-        let insert_text = if !insert_matches && !query.is_empty() {
-            format!("{} {}", query, original_insert_text)
-        } else {
-            original_insert_text
-        };
-
         debug!(
-            "Completion item: query='{}', label='{}', insertText='{}' (fixed={})",
+            "Creating completion item: query='{}', label='{}', content_preview='{}'",
             query,
             label,
-            insert_text.chars().take(20).collect::<String>(),
-            !insert_matches
+            snippet_content.chars().take(20).collect::<String>()
         );
 
-        CompletionItem {
+        let mut completion_item = CompletionItem {
             label: label.clone(),
-            kind: Some(CompletionItemKind::TEXT),
-            // detail: Some(format!("bkmr #{}", snippet.id)),
-            documentation: Some(Documentation::String(if insert_text.len() > 500 {
-                format!("{}...", &insert_text[..500])
+            kind: Some(CompletionItemKind::SNIPPET),  // TODO: Snippet, TEXT
+            detail: Some(format!("bkmr snippet")),
+            documentation: Some(Documentation::String(if snippet_content.len() > 500 {
+                format!("{}...", &snippet_content[..500])
             } else {
-                insert_text.clone()
+                snippet_content.clone()
             })),
-            insert_text: Some(insert_text),
-            insert_text_format: Some(InsertTextFormat::PLAIN_TEXT),
+            insert_text_format: Some(InsertTextFormat::SNIPPET),  // TODO: Snippet, PLAIN_TEXT
             filter_text: Some(label.clone()),
             sort_text: Some(label.clone()),
             ..Default::default()
+        };
+
+        // Use TextEdit for proper replacement if we have a range
+        if let Some(range) = replacement_range {
+            completion_item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
+                range,
+                new_text: snippet_content,
+            }));
+            debug!("Set text_edit for range replacement: {:?}", range);
+        } else {
+            // Fallback to insert_text for backward compatibility
+            completion_item.insert_text = Some(snippet_content);
+            debug!("Using fallback insert_text (no range available)");
         }
+
+        completion_item
     }
 
     /// Check if bkmr binary is available
@@ -248,44 +408,235 @@ impl BkmrLspBackend {
         Ok(())
     }
 
-    /// Determine the appropriate comment syntax for a file based on its extension
+    /// Get language-specific information for Rust pattern translation
+    pub fn get_language_info(&self, language_id: &str) -> LanguageInfo {
+        match language_id.to_lowercase().as_str() {
+            "rust" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "javascript" | "js" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "typescript" | "ts" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "python" => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("\"\"\"".to_string(), "\"\"\"".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "go" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "\t".to_string(),
+            },
+            "java" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "c" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "cpp" | "c++" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "html" => LanguageInfo {
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "css" => LanguageInfo {
+                line_comment: None,
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "scss" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "ruby" => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("=begin".to_string(), "=end".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "php" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "swift" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "kotlin" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "shell" | "bash" | "sh" => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                indent_char: "    ".to_string(),
+            },
+            "yaml" | "yml" => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                indent_char: "  ".to_string(),
+            },
+            "json" => LanguageInfo {
+                line_comment: None,
+                block_comment: None,
+                indent_char: "  ".to_string(),
+            },
+            "markdown" | "md" => LanguageInfo {
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "xml" => LanguageInfo {
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "vim" | "viml" => LanguageInfo {
+                line_comment: Some("\"".to_string()),
+                block_comment: None,
+                indent_char: "  ".to_string(),
+            },
+            // Default fallback for unknown languages
+            _ => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                indent_char: "    ".to_string(),
+            },
+        }
+    }
+
+    /// Test-only method to create language info without backend instance
+    #[cfg(test)]
+    pub fn get_language_info_static(language_id: &str) -> LanguageInfo {
+        match language_id.to_lowercase().as_str() {
+            "rust" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "python" => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: Some(("\"\"\"".to_string(), "\"\"\"".to_string())),
+                indent_char: "    ".to_string(),
+            },
+            "javascript" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            "go" => LanguageInfo {
+                line_comment: Some("//".to_string()),
+                block_comment: Some(("/*".to_string(), "*/".to_string())),
+                indent_char: "\t".to_string(),
+            },
+            "html" => LanguageInfo {
+                line_comment: None,
+                block_comment: Some(("<!--".to_string(), "-->".to_string())),
+                indent_char: "  ".to_string(),
+            },
+            _ => LanguageInfo {
+                line_comment: Some("#".to_string()),
+                block_comment: None,
+                indent_char: "    ".to_string(),
+            },
+        }
+    }
+
+    /// Test-only method to translate Rust patterns without backend instance
+    #[cfg(test)]
+    pub fn translate_rust_patterns_static(content: &str, language_id: &str, uri: &Url) -> String {
+        let target_lang = Self::get_language_info_static(language_id);
+        
+        // Use line-by-line processing to preserve newlines
+        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang);
+
+        // Handle block comments (these can span multiple lines)
+        if let Some((target_start, target_end)) = &target_lang.block_comment {
+            let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
+                .dot_matches_new_line(true)
+                .build()
+                .expect("compile block comment regex");
+            processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
+                format!("{}{}{}", target_start, &caps[1], target_end)
+            }).to_string();
+        }
+
+        // Replace filename
+        if processed_content.contains("{{ filename }}") {
+            let filename = uri.path().split('/').last().unwrap_or("untitled");
+            processed_content = processed_content.replace("{{ filename }}", filename);
+        }
+
+        processed_content
+    }
+
+    /// Legacy method for backward compatibility - uses new language info system
     fn get_comment_syntax(&self, file_path: &str) -> &'static str {
         let path = Path::new(file_path);
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-
-        match extension {
-            // C-style languages
-            "rs" | "c" | "cpp" | "cc" | "cxx" | "h" | "hpp" | "java" | "js" | "ts" | "jsx"
-            | "tsx" | "cs" | "go" | "swift" | "kt" | "scala" | "dart" => "//",
-            // Shell-style languages
-            "sh" | "bash" | "zsh" | "fish" | "py" | "rb" | "pl" | "r" | "yaml" | "yml" | "toml"
-            | "cfg" | "ini" | "properties" => "#",
-            // HTML/XML
-            "html" | "htm" | "xml" | "xhtml" | "svg" => "<!--",
-            // CSS
-            "css" | "scss" | "sass" | "less" => "/*",
-            // SQL
-            "sql" => "--",
-            // Lua
-            "lua" => "--",
-            // Haskell
-            "hs" => "--",
-            // Lisp family
-            "lisp" | "cl" | "clj" | "cljs" | "scm" | "rkt" => ";",
-            // VimScript
-            "vim" => "\"",
-            // Batch files
-            "bat" | "cmd" => "REM",
-            // PowerShell
-            "ps1" | "psm1" | "psd1" => "#",
-            // LaTeX
-            "tex" | "latex" => "%",
-            // Fortran
-            "f" | "f77" | "f90" | "f95" | "f03" | "f08" => "!",
-            // MATLAB
-            "m" => "%",
-            // Default to hash for unknown file types
-            _ => "#",
+        
+        // Map file extension to language ID for language info lookup
+        let language_id = match extension {
+            "rs" => "rust",
+            "js" | "mjs" => "javascript", 
+            "ts" | "tsx" => "typescript",
+            "py" | "pyw" => "python",
+            "go" => "go",
+            "java" => "java",
+            "c" | "h" => "c",
+            "cpp" | "cc" | "cxx" | "hpp" => "cpp",
+            "html" | "htm" => "html",
+            "css" => "css",
+            "scss" => "scss",
+            "rb" => "ruby",
+            "php" => "php",
+            "swift" => "swift",
+            "kt" | "kts" => "kotlin",
+            "sh" | "bash" | "zsh" => "shell",
+            "yaml" | "yml" => "yaml",
+            "json" => "json",
+            "md" | "markdown" => "markdown",
+            "xml" => "xml",
+            "vim" => "vim",
+            _ => "unknown",
+        };
+        
+        let lang_info = self.get_language_info(language_id);
+        // Return line comment or block comment start, fallback to #
+        if let Some(_line_comment) = &lang_info.line_comment {
+            // This is a bit of a hack since we need to return &'static str
+            // but the LanguageInfo returns String. For the legacy method,
+            // we'll use a simple lookup.
+            match language_id {
+                "rust" | "javascript" | "typescript" | "go" | "java" | "c" | "cpp" | "swift" | "kotlin" | "scss" | "php" => "//",
+                "python" | "shell" | "yaml" => "#",
+                "html" | "markdown" | "xml" => "<!--",
+                "css" => "/*",
+                "vim" => "\"",
+                _ => "#",
+            }
+        } else {
+            "#"
         }
     }
 
@@ -411,7 +762,7 @@ impl LanguageServer for BkmrLspBackend {
                 )),
                 completion_provider: Some(CompletionOptions {
                     resolve_provider: Some(false),
-                    trigger_characters: Some(vec![":".to_string()]),
+                    trigger_characters: None, // No automatic triggers - manual completion only
                     all_commit_characters: None,
                     work_done_progress_options: WorkDoneProgressOptions::default(),
                     completion_item: None,
@@ -425,7 +776,7 @@ impl LanguageServer for BkmrLspBackend {
             ..Default::default()
         };
 
-        info!("Initialize complete - trigger characters: [':']");
+        info!("Initialize complete - manual completion only (no trigger characters)");
         Ok(result)
     }
 
@@ -451,11 +802,16 @@ impl LanguageServer for BkmrLspBackend {
     async fn did_open(&self, params: DidOpenTextDocumentParams) {
         let uri = params.text_document.uri.to_string();
         let content = params.text_document.text;
+        let language_id = params.text_document.language_id;
 
-        debug!("Document opened: {}", uri);
+        debug!("Document opened: {} (language: {})", uri, language_id);
 
         if let Ok(mut cache) = self.document_cache.write() {
-            cache.insert(uri, content);
+            cache.insert(uri.clone(), content);
+        }
+
+        if let Ok(mut lang_cache) = self.language_cache.write() {
+            lang_cache.insert(uri, language_id);
         }
     }
 
@@ -490,6 +846,10 @@ impl LanguageServer for BkmrLspBackend {
         if let Ok(mut cache) = self.document_cache.write() {
             cache.remove(&uri);
         }
+
+        if let Ok(mut lang_cache) = self.language_cache.write() {
+            lang_cache.remove(&uri);
+        }
     }
 
     #[instrument(skip(self, params))]
@@ -502,39 +862,18 @@ impl LanguageServer for BkmrLspBackend {
             uri, position.line, position.character
         );
 
-        // Check if this was triggered by our trigger character
+        // Only respond to manual completion requests (Ctrl+Space)
         if let Some(context) = &params.context {
             match context.trigger_kind {
-                CompletionTriggerKind::TRIGGER_CHARACTER => {
-                    // This is exactly what we want - triggered by typing ':'
-                    if let Some(trigger_char) = &context.trigger_character {
-                        if trigger_char == ":" {
-                            debug!(
-                                "Triggered by ':' character - proceeding with snippet completion"
-                            );
-                        } else {
-                            debug!(
-                                "Triggered by different character '{}' - skipping",
-                                trigger_char
-                            );
-                            return Ok(Some(CompletionResponse::Array(vec![])));
-                        }
-                    }
-                }
                 CompletionTriggerKind::INVOKED => {
-                    // Manual Ctrl+Space - check if we're in a snippet context
-                    let query = self.extract_snippet_query(uri, position);
-                    if query.is_none() {
-                        debug!("Manual trigger but no snippet context - skipping");
-                        return Ok(Some(CompletionResponse::Array(vec![])));
-                    }
-                    debug!("Manual trigger with snippet context - proceeding");
+                    // Manual Ctrl+Space - proceed with word-based completion
+                    debug!("Manual completion request - proceeding with word-based snippet search");
                 }
                 CompletionTriggerKind::TRIGGER_FOR_INCOMPLETE_COMPLETIONS => {
                     debug!("Completion for incomplete results - proceeding");
                 }
                 _ => {
-                    debug!("Unknown trigger kind - skipping");
+                    debug!("Ignoring automatic trigger - only manual completion supported");
                     return Ok(Some(CompletionResponse::Array(vec![])));
                 }
             }
@@ -543,45 +882,34 @@ impl LanguageServer for BkmrLspBackend {
             return Ok(Some(CompletionResponse::Array(vec![])));
         }
 
-        // Extract the query after trigger
-        let query = self.extract_snippet_query(uri, position);
-        debug!("Extracted snippet query: {:?}", query);
+        // Extract the query after trigger and get replacement range
+        let query_info = self.extract_snippet_query(uri, position);
+        debug!("Extracted snippet query info: {:?}", query_info);
 
-        // Determine what text to replace (for proper text editing)
-        // Extract data from cache and drop the guard before await
-        let trigger_context = {
-            let cache = self.document_cache.read().unwrap();
-            let content = cache.get(&uri.to_string()).map(|s| &**s).unwrap_or("");
-            let lines: Vec<&str> = content.lines().collect();
-            let line = if (position.line as usize) < lines.len() {
-                lines[position.line as usize]
-            } else {
-                ""
-            };
-            let before_cursor = &line[..std::cmp::min(position.character as usize, line.len())];
+        // Get the language ID for filetype-based filtering
+        let language_id = self.get_language_id(uri);
+        debug!("Document language ID: {:?}", language_id);
 
-            // Find the trigger context for text replacement
-            if let Some(pos) = before_cursor.rfind(":snip:") {
-                before_cursor[pos..].to_string()
-            } else if let Some(pos) = before_cursor.rfind(":s:") {
-                before_cursor[pos..].to_string()
-            } else if let Some(pos) = before_cursor.rfind(':') {
-                before_cursor[pos..].to_string()
-            } else {
-                String::new()
-            }
-        }; // Guard is dropped here
+        // Extract query and range information
+        let (query_str, replacement_range) = if let Some((query, range)) = query_info {
+            debug!("Query: '{}', Range: {:?}", query, range);
+            (query, Some(range))
+        } else {
+            debug!("No query extracted, using empty query");
+            (String::new(), None)
+        };
 
-        debug!("Trigger context: '{}'", trigger_context);
-
-        match self.fetch_snippets(query.as_deref()).await {
+        match self.fetch_snippets(if query_str.is_empty() { None } else { Some(&query_str) }, language_id.as_deref()).await {
             Ok(snippets) => {
-                let query_str = query.as_deref().unwrap_or(""); // Clean query: "aws", not ":aws"
                 let completion_items: Vec<CompletionItem> = snippets
                     .iter()
                     .map(|snippet| {
                         self.snippet_to_completion_item_with_trigger(
-                            snippet, position, query_str, // Pass "aws", not ":aws"
+                            snippet, 
+                            &query_str, 
+                            replacement_range.clone(),
+                            language_id.as_deref().unwrap_or("unknown"),
+                            uri,
                         )
                     })
                     .collect();
@@ -589,17 +917,24 @@ impl LanguageServer for BkmrLspBackend {
                 info!(
                     "Returning {} completion items for query: {:?}",
                     completion_items.len(),
-                    query
+                    query_str
                 );
 
-                for (i, item) in completion_items.iter().enumerate() {
+                // Only log first few items to reduce noise in LSP logs
+                for (i, item) in completion_items.iter().enumerate().take(3) {
                     debug!(
                         "Item {}: label='{}', sort_text={:?}",
                         i, item.label, item.sort_text
                     );
                 }
+                if completion_items.len() > 3 {
+                    debug!("... and {} more items", completion_items.len() - 3);
+                }
 
-                Ok(Some(CompletionResponse::Array(completion_items)))
+                Ok(Some(CompletionResponse::List(CompletionList {
+                    is_incomplete: true,
+                    items: completion_items,
+                })))
             }
             Err(e) => {
                 error!("Failed to fetch snippets: {}", e);
@@ -707,4 +1042,22 @@ impl LanguageServer for BkmrLspBackend {
 
         Ok(None)
     }
+}
+
+/// Start a bkmr-lsp server with given input/output streams
+/// This function is used by tests to spawn a real LSP server for testing
+pub async fn start_server<I, O>(read: I, write: O) 
+where
+    I: tokio::io::AsyncRead + Unpin,
+    O: tokio::io::AsyncWrite,
+{
+    use tower_lsp::{LspService, Server};
+    
+    // Create the LSP service
+    let (service, socket) = LspService::new(|client| {
+        BkmrLspBackend::new(client)
+    });
+    
+    // Start the server with the provided streams
+    Server::new(read, write, socket).serve(service).await;
 }
