@@ -23,6 +23,7 @@ anyhow    = "1"
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 atty = "0.2.14"
+regex = "1"
 
 [dev-dependencies]
 tokio-test = "0.4.4"

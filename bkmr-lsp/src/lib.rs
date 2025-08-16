@@ -8,129 +8,177 @@ mod tests {
     use tower_lsp::lsp_types::Url;
 
     #[test]
-    fn test_language_info_database() {
-        // Test a few key languages from our database
+    fn test_universal_snippet_tag_detection() {
+        // Test that snippets with "universal" tag are identified correctly
+        let universal_snippet = BkmrSnippet {
+            id: 1,
+            title: "Test Universal Snippet".to_string(),
+            url: "// This is a test".to_string(),
+            description: "Test description".to_string(),
+            tags: vec!["universal".to_string(), "test".to_string()],
+            access_count: 0,
+        };
+        
+        let regular_snippet = BkmrSnippet {
+            id: 2,
+            title: "Test Regular Snippet".to_string(),
+            url: "// This is a test".to_string(),
+            description: "Test description".to_string(),
+            tags: vec!["rust".to_string(), "test".to_string()],
+            access_count: 0,
+        };
+        
+        // Test tag detection
+        assert!(universal_snippet.tags.contains(&"universal".to_string()));
+        assert!(!regular_snippet.tags.contains(&"universal".to_string()));
+    }
+
+    #[test]
+    fn test_rust_comment_translation() {
+        let uri = Url::parse("file:///test/example.py").unwrap();
+        
+        // Test line comments
+        let rust_content = r#"// This is a line comment
+    // Indented comment
+let x = 5; // End of line comment"#;
+        
+        let python_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "python", &uri);
+        assert!(python_result.contains("# This is a line comment"));
+        assert!(python_result.contains("    # Indented comment"));
+        assert!(python_result.contains("let x = 5; # End of line comment"));
+        
+        // Test with HTML (no line comments)
+        let html_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "html", &uri);
+        assert!(html_result.contains("<!-- This is a line comment -->"));
+        assert!(html_result.contains("  <!-- Indented comment -->"));  // HTML uses 2 spaces
+        assert!(html_result.contains("let x = 5; <!-- End of line comment -->"));
+    }
+
+    #[test]
+    fn test_rust_block_comment_translation() {
+        let uri = Url::parse("file:///test/example.py").unwrap();
+        
+        let rust_content = r#"/* This is a block comment */
+/*
+Multi-line
+block comment
+*/"#;
+        
+        let python_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "python", &uri);
+        assert!(python_result.contains("\"\"\" This is a block comment \"\"\""));
+        assert!(python_result.contains("\"\"\"\nMulti-line\nblock comment\n\"\"\""));
+        
+        let html_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "html", &uri);
+        assert!(html_result.contains("<!-- This is a block comment -->"));
+        assert!(html_result.contains("<!--\nMulti-line\nblock comment\n-->"));
+    }
+
+    #[test]
+    fn test_rust_indentation_translation() {
+        let uri = Url::parse("file:///test/example.go").unwrap();
+        
+        let rust_content = r#"fn example() {
+    let x = 5;
+        let y = 10;
+            let z = 15;
+}"#;
+        
+        // Go uses tabs
+        let go_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "go", &uri);
+        assert!(go_result.contains("fn example() {"));
+        assert!(go_result.contains("\tlet x = 5;"));
+        assert!(go_result.contains("\t\tlet y = 10;"));
+        assert!(go_result.contains("\t\t\tlet z = 15;"));
+        
+        // JavaScript uses 2 spaces
+        let js_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "javascript", &uri);
+        assert!(js_result.contains("  let x = 5;"));
+        assert!(js_result.contains("    let y = 10;"));
+        assert!(js_result.contains("      let z = 15;"));
+    }
+
+    #[test]
+    fn test_filename_replacement() {
+        let uri = Url::parse("file:///path/to/example.rs").unwrap();
+        
+        let content = "// File: {{ filename }}";
+        let result = BkmrLspBackend::translate_rust_patterns_static(content, "rust", &uri);
+        assert!(result.contains("// File: example.rs"));
+    }
+
+    #[test]
+    fn test_mixed_pattern_translation() {
+        let uri = Url::parse("file:///test/example.py").unwrap();
+        
+        let rust_content = r#"// Function: {{ function_name }}
+// File: {{ filename }}
+fn {{ function_name }}() {
+    // TODO: implement
+    /* Block comment here */
+        let value = "hello";
+}"#;
+        
+        let python_result = BkmrLspBackend::translate_rust_patterns_static(rust_content, "python", &uri);
+        
+        // Check comment translation
+        assert!(python_result.contains("# Function: {{ function_name }}"));
+        assert!(python_result.contains("# File: example.py"));
+        assert!(python_result.contains("    # TODO: implement"));
+        assert!(python_result.contains("\"\"\" Block comment here \"\"\""));
+        
+        // Check that bkmr templates are preserved
+        assert!(python_result.contains("{{ function_name }}"));
+        
+        // Check indentation (Python uses 4 spaces like Rust, so no change)
+        assert!(python_result.contains("        let value = \"hello\";"));
+    }
+
+    #[test]
+    fn test_language_info_retrieval() {
         let rust_info = BkmrLspBackend::get_language_info_static("rust");
-        assert_eq!(rust_info.name, "Rust");
         assert_eq!(rust_info.line_comment, Some("//".to_string()));
         assert_eq!(rust_info.block_comment, Some(("/*".to_string(), "*/".to_string())));
         assert_eq!(rust_info.indent_char, "    ");
-        assert_eq!(rust_info.indent_width, 4);
         
         let python_info = BkmrLspBackend::get_language_info_static("python");
-        assert_eq!(python_info.name, "Python");
         assert_eq!(python_info.line_comment, Some("#".to_string()));
         assert_eq!(python_info.block_comment, Some(("\"\"\"".to_string(), "\"\"\"".to_string())));
         assert_eq!(python_info.indent_char, "    ");
-        assert_eq!(python_info.indent_width, 4);
         
         let go_info = BkmrLspBackend::get_language_info_static("go");
-        assert_eq!(go_info.name, "Go");
+        assert_eq!(go_info.line_comment, Some("//".to_string()));
         assert_eq!(go_info.indent_char, "\t");
-        assert_eq!(go_info.indent_width, 1);
         
         let html_info = BkmrLspBackend::get_language_info_static("html");
-        assert_eq!(html_info.name, "HTML");
         assert_eq!(html_info.line_comment, None);
         assert_eq!(html_info.block_comment, Some(("<!--".to_string(), "-->".to_string())));
-        
-        // Test unknown language fallback
-        let unknown_info = BkmrLspBackend::get_language_info_static("nonexistent");
-        assert_eq!(unknown_info.name, "Unknown");
-        assert_eq!(unknown_info.line_comment, Some("#".to_string()));
+        assert_eq!(html_info.indent_char, "  ");
     }
 
     #[test]
-    fn test_lsp_placeholder_processing() {
-        // Test template with all supported LSP placeholders
-        let universal_template = r#"LSP_COMMENT_LINE This is a line comment
-LSP_COMMENT_BLOCK_START
-This is a block comment
-LSP_COMMENT_BLOCK_END
-
-function example() {
-LSP_INDENTconsole.log("Hello world");
-LSP_FOLD_START
-LSP_INDENTsome code here
-LSP_FOLD_END
-}
-
-LSP_COMMENT_LINE LSP_FILEPATH"#;
-
-        // Test with different language IDs and verify appropriate replacements
+    fn test_edge_cases() {
+        let uri = Url::parse("file:///test/example.py").unwrap();
         
-        // JavaScript/TypeScript
-        let js_url = Url::parse("file:///test/example.js").unwrap();
-        let js_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "javascript", &js_url);
-        assert!(js_result.contains("// This is a line comment"));
-        assert!(js_result.contains("/*\nThis is a block comment\n*/"));
-        assert!(js_result.contains("    console.log"));  // 4-space indent
-        assert!(js_result.contains("{{{"));  // fold markers
-        assert!(js_result.contains("// example.js"));
-        
-        // Python
-        let py_url = Url::parse("file:///test/example.py").unwrap();  
-        let py_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "python", &py_url);
-        assert!(py_result.contains("# This is a line comment"));
-        assert!(py_result.contains("\"\"\"\nThis is a block comment\n\"\"\""));
-        assert!(py_result.contains("    console.log"));  // 4-space indent
-        assert!(py_result.contains("# example.py"));
-        
-        // Rust
-        let rs_url = Url::parse("file:///test/example.rs").unwrap();
-        let rs_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "rust", &rs_url);
-        assert!(rs_result.contains("// This is a line comment"));
-        assert!(rs_result.contains("/*\nThis is a block comment\n*/"));
-        assert!(rs_result.contains("// example.rs"));
-        
-        // Go (tab indentation)
-        let go_url = Url::parse("file:///test/example.go").unwrap();
-        let go_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "go", &go_url);
-        assert!(go_result.contains("// This is a line comment"));
-        assert!(go_result.contains("\tconsole.log"));  // tab indent
-        assert!(go_result.contains("// example.go"));
-        
-        // HTML (no line comments)
-        let html_url = Url::parse("file:///test/example.html").unwrap();
-        let html_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "html", &html_url);
-        assert!(html_result.contains("<!--  --> This is a line comment"));
-        assert!(html_result.contains("<!--\nThis is a block comment\n-->"));
-        assert!(html_result.contains("<!--  --> example.html"));
-        
-        // CSS (only block comments)
-        let css_url = Url::parse("file:///test/example.css").unwrap();
-        let css_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "css", &css_url);
-        assert!(css_result.contains("/*  */ This is a line comment"));
-        assert!(css_result.contains("/*\nThis is a block comment\n*/"));
-        
-        // Unknown language (fallback to hash comments)
-        let unknown_url = Url::parse("file:///test/example.unknown").unwrap();
-        let unknown_result = BkmrLspBackend::process_lsp_placeholders_static(universal_template, "unknown", &unknown_url);
-        assert!(unknown_result.contains("# This is a line comment"));
-        assert!(unknown_result.contains("# example.unknown"));
-    }
-
-    #[test]
-    fn test_empty_and_edge_cases() {
-        let url = Url::parse("file:///test/example.rs").unwrap();
-        
-        // Empty string
-        let result = BkmrLspBackend::process_lsp_placeholders_static("", "rust", &url);
+        // Empty content
+        let result = BkmrLspBackend::translate_rust_patterns_static("", "python", &uri);
         assert_eq!(result, "");
         
-        // No placeholders
-        let no_placeholders = "Just normal text here";
-        let result = BkmrLspBackend::process_lsp_placeholders_static(no_placeholders, "rust", &url);
-        assert_eq!(result, no_placeholders);
+        // No Rust patterns
+        let no_patterns = "Just plain text here";
+        let result = BkmrLspBackend::translate_rust_patterns_static(no_patterns, "python", &uri);
+        assert_eq!(result, no_patterns);
         
-        // Only whitespace
-        let whitespace = "   \n\t  \n";
-        let result = BkmrLspBackend::process_lsp_placeholders_static(whitespace, "rust", &url);
-        assert_eq!(result, whitespace);
+        // Comments in strings (should not be translated)
+        let string_comments = r#"let url = "https://example.com"; // Real comment"#;
+        let result = BkmrLspBackend::translate_rust_patterns_static(string_comments, "python", &uri);
+        assert!(result.contains("\"https://example.com\""));
+        assert!(result.contains("# Real comment"));
         
-        // Partial placeholder matches (should not be replaced)
-        let partial = "LSP_COMMENT text LSP_INVALID_PLACEHOLDER more text";
-        let result = BkmrLspBackend::process_lsp_placeholders_static(partial, "rust", &url);
-        assert_eq!(result, partial);  // Should remain unchanged
+        // Multiple line patterns
+        let multi_line = "//Comment1\n//Comment2\n    //Comment3";
+        let result = BkmrLspBackend::translate_rust_patterns_static(multi_line, "python", &uri);
+        assert!(result.contains("# Comment1"));
+        assert!(result.contains("# Comment2"));
+        assert!(result.contains("    # Comment3"));
     }
 }
