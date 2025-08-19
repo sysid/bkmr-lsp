@@ -12,9 +12,9 @@ impl CommandService {
     /// Execute the insertFilepathComment command
     #[instrument(skip(file_uri))]
     pub fn insert_filepath_comment(file_uri: &str) -> Result<WorkspaceEdit> {
-        let relative_path = Self::get_relative_path(file_uri)
-            .context("calculate relative path for file")?;
-        
+        let relative_path =
+            Self::get_relative_path(file_uri).context("calculate relative path for file")?;
+
         let comment_syntax = LanguageRegistry::get_comment_syntax(file_uri);
 
         let comment_text = match comment_syntax {
@@ -40,8 +40,7 @@ impl CommandService {
             new_text: comment_text,
         };
 
-        let uri = Url::parse(file_uri)
-            .context("parse file URI for workspace edit")?;
+        let uri = Url::parse(file_uri).context("parse file URI for workspace edit")?;
 
         let mut changes = HashMap::new();
         changes.insert(uri, vec![edit]);
@@ -55,10 +54,10 @@ impl CommandService {
 
     /// Get the relative path from project root
     fn get_relative_path(file_uri: &str) -> Result<String> {
-        let url = Url::parse(file_uri)
-            .context("parse file URI")?;
+        let url = Url::parse(file_uri).context("parse file URI")?;
 
-        let file_path = url.to_file_path()
+        let file_path = url
+            .to_file_path()
             .map_err(|_| anyhow::anyhow!("Convert URL to file path"))
             .context("convert URL to file path")?;
 
@@ -107,11 +106,11 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         let workspace_edit = result.expect("valid workspace edit");
-        
+
         let changes = workspace_edit.changes.expect("workspace changes");
         let edits = changes.values().next().expect("text edits");
         let edit = &edits[0];
-        
+
         assert!(edit.new_text.starts_with("// "));
         assert!(edit.new_text.contains("test.rs"));
     }
@@ -127,11 +126,11 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         let workspace_edit = result.expect("valid workspace edit");
-        
+
         let changes = workspace_edit.changes.expect("workspace changes");
         let edits = changes.values().next().expect("text edits");
         let edit = &edits[0];
-        
+
         assert!(edit.new_text.starts_with("<!-- "));
         assert!(edit.new_text.ends_with(" -->\n"));
         assert!(edit.new_text.contains("test.html"));
@@ -148,11 +147,11 @@ mod tests {
         // Assert
         assert!(result.is_ok());
         let workspace_edit = result.expect("valid workspace edit");
-        
+
         let changes = workspace_edit.changes.expect("workspace changes");
         let edits = changes.values().next().expect("text edits");
         let edit = &edits[0];
-        
+
         assert!(edit.new_text.starts_with("# "));
         assert!(edit.new_text.contains("test.py"));
     }

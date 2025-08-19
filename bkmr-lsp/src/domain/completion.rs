@@ -63,7 +63,11 @@ pub struct SnippetFilter {
 }
 
 impl SnippetFilter {
-    pub fn new(language_id: Option<String>, query_prefix: Option<String>, max_results: usize) -> Self {
+    pub fn new(
+        language_id: Option<String>,
+        query_prefix: Option<String>,
+        max_results: usize,
+    ) -> Self {
         Self {
             language_id,
             query_prefix,
@@ -107,8 +111,14 @@ mod tests {
         // Arrange
         let text = "hello".to_string();
         let range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 0, character: 5 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 5,
+            },
         };
 
         // Act
@@ -125,8 +135,14 @@ mod tests {
         let query = CompletionQuery::new(
             String::new(),
             Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 0 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 0,
+                },
             },
         );
 
@@ -141,13 +157,22 @@ mod tests {
     fn given_completion_context_when_adding_query_then_updates_correctly() {
         // Arrange
         let uri = Url::parse("file:///test.rs").expect("parse URL");
-        let position = Position { line: 0, character: 5 };
+        let position = Position {
+            line: 0,
+            character: 5,
+        };
         let language_id = Some("rust".to_string());
         let query = CompletionQuery::new(
             "test".to_string(),
             Range {
-                start: Position { line: 0, character: 0 },
-                end: Position { line: 0, character: 4 },
+                start: Position {
+                    line: 0,
+                    character: 0,
+                },
+                end: Position {
+                    line: 0,
+                    character: 4,
+                },
             },
         );
 
@@ -174,7 +199,10 @@ mod tests {
         // Assert
         assert_eq!(
             query,
-            Some(r#"(tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+            Some(
+                r#"(tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#
+                    .to_string()
+            )
         );
     }
 

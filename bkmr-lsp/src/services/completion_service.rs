@@ -1,6 +1,9 @@
 use anyhow::{Context, Result};
 use std::sync::Arc;
-use tower_lsp::lsp_types::{CompletionItem, CompletionItemKind, CompletionTextEdit, Documentation, InsertTextFormat, TextEdit};
+use tower_lsp::lsp_types::{
+    CompletionItem, CompletionItemKind, CompletionTextEdit, Documentation, InsertTextFormat,
+    TextEdit,
+};
 use tracing::{debug, instrument};
 
 use crate::domain::{CompletionContext, Snippet, SnippetFilter};
@@ -27,10 +30,14 @@ impl CompletionService {
 
     /// Generate completion items from context
     #[instrument(skip(self))]
-    pub async fn get_completions(&self, context: &CompletionContext) -> Result<Vec<CompletionItem>> {
+    pub async fn get_completions(
+        &self,
+        context: &CompletionContext,
+    ) -> Result<Vec<CompletionItem>> {
         let filter = self.build_snippet_filter(context);
-        
-        let snippets = self.repository
+
+        let snippets = self
+            .repository
             .fetch_snippets(&filter)
             .await
             .context("fetch snippets from repository")?;
@@ -142,17 +149,18 @@ mod tests {
             vec!["rust".to_string(), "_snip_".to_string()],
         );
 
-        let repository = Arc::new(
-            MockSnippetRepository::new()
-                .with_snippets(vec![snippet.clone()])
-        );
+        let repository =
+            Arc::new(MockSnippetRepository::new().with_snippets(vec![snippet.clone()]));
 
         let service = CompletionService::new(repository);
-        
+
         let uri = Url::parse("file:///test.rs").expect("parse URI");
         let context = CompletionContext::new(
             uri,
-            Position { line: 0, character: 5 },
+            Position {
+                line: 0,
+                character: 5,
+            },
             Some("rust".to_string()),
         );
 
@@ -180,22 +188,17 @@ mod tests {
 
         let repository = Arc::new(MockSnippetRepository::new());
         let service = CompletionService::new(repository);
-        
+
         let uri = Url::parse("file:///test.py").expect("parse URI");
 
         // Act
-        let result = service.snippet_to_completion_item(
-            &universal_snippet,
-            "",
-            None,
-            "python",
-            &uri,
-        );
+        let result =
+            service.snippet_to_completion_item(&universal_snippet, "", None, "python", &uri);
 
         // Assert
         assert!(result.is_ok());
         let item = result.expect("valid completion item");
-        
+
         // Should have translated Rust comment to Python comment
         let insert_text = item.insert_text.expect("insert text");
         assert!(insert_text.contains("# This is a universal comment"));
@@ -214,26 +217,27 @@ mod tests {
 
         let repository = Arc::new(MockSnippetRepository::new());
         let service = CompletionService::new(repository);
-        
+
         let uri = Url::parse("file:///test.rs").expect("parse URI");
         let range = Range {
-            start: Position { line: 0, character: 0 },
-            end: Position { line: 0, character: 4 },
+            start: Position {
+                line: 0,
+                character: 0,
+            },
+            end: Position {
+                line: 0,
+                character: 4,
+            },
         };
 
         // Act
-        let result = service.snippet_to_completion_item(
-            &snippet,
-            "test",
-            Some(range),
-            "rust",
-            &uri,
-        );
+        let result =
+            service.snippet_to_completion_item(&snippet, "test", Some(range), "rust", &uri);
 
         // Assert
         assert!(result.is_ok());
         let item = result.expect("valid completion item");
-        
+
         match item.text_edit {
             Some(CompletionTextEdit::Edit(edit)) => {
                 assert_eq!(edit.range, range);

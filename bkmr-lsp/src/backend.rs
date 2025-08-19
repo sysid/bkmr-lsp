@@ -67,7 +67,6 @@ impl BkmrLspBackend {
         }
     }
 
-
     /// Extract word backwards from cursor position and return both query and range
     #[instrument(skip(self))]
     fn extract_snippet_query(&self, uri: &Url, position: Position) -> Option<(String, Range)> {
@@ -87,8 +86,11 @@ impl BkmrLspBackend {
         }
 
         let before_cursor = &line[..char_pos];
-        debug!("Extracting from line: '{}', char_pos: {}, before_cursor: '{}'", line, char_pos, before_cursor);
-        
+        debug!(
+            "Extracting from line: '{}', char_pos: {}, before_cursor: '{}'",
+            line, char_pos, before_cursor
+        );
+
         // Extract word backwards from cursor - find where the word starts
         let word_start = before_cursor
             .char_indices()
@@ -97,14 +99,14 @@ impl BkmrLspBackend {
             .last()
             .map(|(i, _)| i)
             .unwrap_or(char_pos);
-        
+
         debug!("Word boundaries: start={}, end={}", word_start, char_pos);
 
         if word_start < char_pos {
             let word = &before_cursor[word_start..];
             if !word.is_empty() && word.chars().any(|c| c.is_alphanumeric()) {
                 debug!("Extracted word: '{}' from position {}", word, char_pos);
-                
+
                 // Create range for the word to be replaced
                 let range = Range {
                     start: Position {
@@ -116,7 +118,7 @@ impl BkmrLspBackend {
                         character: char_pos as u32,
                     },
                 };
-                
+
                 return Some((word.to_string(), range));
             }
         }
@@ -136,7 +138,7 @@ impl BkmrLspBackend {
         Self::build_snippet_fts_query_static(language_id)
     }
 
-    /// Static version of FTS query builder 
+    /// Static version of FTS query builder
     fn build_snippet_fts_query_static(language_id: Option<&str>) -> Option<String> {
         if let Some(lang) = language_id {
             if !lang.trim().is_empty() {
@@ -155,42 +157,57 @@ impl BkmrLspBackend {
     fn translate_rust_patterns_line_by_line(content: &str, target_lang: &LanguageInfo) -> String {
         let lines: Vec<&str> = content.split('\n').collect();
         let mut processed_lines = Vec::new();
-        
+
+        // Compile regexes once outside the loop
+        let line_start_comment_re =
+            regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex");
+        let line_end_comment_re =
+            regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex");
+        let indent_re = regex::Regex::new(r"^( {4})+").expect("valid indent regex");
+
         for line in lines {
             let mut processed_line = line.to_string();
-            
+
             // Process line comments (//)
             if let Some(target_comment) = &target_lang.line_comment {
                 // Start of line comments
-                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex").captures(line) {
+                if let Some(captures) = line_start_comment_re.captures(line) {
                     processed_line = format!("{}{} {}", &captures[1], target_comment, &captures[2]);
                 }
                 // End of line comments (after code)
-                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex").captures(line) {
-                    processed_line = format!("{}{}{} {}", &captures[1], &captures[2], target_comment, &captures[3]);
+                else if let Some(captures) = line_end_comment_re.captures(line) {
+                    processed_line = format!(
+                        "{}{}{} {}",
+                        &captures[1], &captures[2], target_comment, &captures[3]
+                    );
                 }
             } else if let Some((block_start, block_end)) = &target_lang.block_comment {
                 // For languages without line comments, use block comments
-                if let Some(captures) = regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex").captures(line) {
-                    processed_line = format!("{}{} {} {}", &captures[1], block_start, &captures[2], block_end);
-                }
-                else if let Some(captures) = regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex").captures(line) {
-                    processed_line = format!("{}{}{} {} {}", &captures[1], &captures[2], block_start, &captures[3], block_end);
+                if let Some(captures) = line_start_comment_re.captures(line) {
+                    processed_line = format!(
+                        "{}{} {} {}",
+                        &captures[1], block_start, &captures[2], block_end
+                    );
+                } else if let Some(captures) = line_end_comment_re.captures(line) {
+                    processed_line = format!(
+                        "{}{}{} {} {}",
+                        &captures[1], &captures[2], block_start, &captures[3], block_end
+                    );
                 }
             }
-            
+
             // Process indentation
             if target_lang.indent_char != "    " {
-                if let Some(captures) = regex::Regex::new(r"^( {4})+").expect("valid indent regex").captures(&processed_line) {
+                if let Some(captures) = indent_re.captures(&processed_line) {
                     let rust_indent_count = captures[0].len() / 4;
                     let new_indent = target_lang.indent_char.repeat(rust_indent_count);
                     processed_line = processed_line.replacen(&captures[0], &new_indent, 1);
                 }
             }
-            
+
             processed_lines.push(processed_line);
         }
-        
+
         processed_lines.join("\n")
     }
 
@@ -202,7 +219,11 @@ impl BkmrLspBackend {
 
     /// Execute bkmr command and return parsed snippets
     #[instrument(skip(self))]
-    async fn fetch_snippets(&self, prefix: Option<&str>, language_id: Option<&str>) -> Result<Vec<BkmrSnippet>> {
+    async fn fetch_snippets(
+        &self,
+        prefix: Option<&str>,
+        language_id: Option<&str>,
+    ) -> Result<Vec<BkmrSnippet>> {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
@@ -213,7 +234,7 @@ impl BkmrLspBackend {
 
         // Build FTS query that combines language-specific and universal snippets
         let mut fts_parts = Vec::new();
-        
+
         // Add language + universal snippet query
         if let Some(snippet_query) = self.build_snippet_fts_query(language_id) {
             fts_parts.push(format!("({})", snippet_query));
@@ -237,7 +258,10 @@ impl BkmrLspBackend {
                 fts_parts.join(" AND ")
             };
             args.push(fts_query);
-            debug!("Final FTS query: {}", args.last().expect("FTS query in args"));
+            debug!(
+                "Final FTS query: {}",
+                args.last().expect("FTS query in args")
+            );
         }
 
         debug!("Executing bkmr with args: {:?}", args);
@@ -295,7 +319,8 @@ impl BkmrLspBackend {
         debug!("Content length: {} bytes", content.len());
 
         // Use line-by-line processing to preserve newlines
-        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang);
+        let mut processed_content =
+            Self::translate_rust_patterns_line_by_line(content, &target_lang);
 
         // Replace Rust block comments (/* */) with target language block comments
         if let Some((target_start, target_end)) = &target_lang.block_comment {
@@ -303,14 +328,16 @@ impl BkmrLspBackend {
                 .dot_matches_new_line(true)
                 .build()
                 .expect("compile block comment regex");
-            processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{}", target_start, &caps[1], target_end)
-            }).to_string();
+            processed_content = block_comment_regex
+                .replace_all(&processed_content, |caps: &regex::Captures| {
+                    format!("{}{}{}", target_start, &caps[1], target_end)
+                })
+                .to_string();
         }
 
         // Add file name replacement for simple relative path
         if processed_content.contains("{{ filename }}") {
-            let filename = uri.path().split('/').last().unwrap_or("untitled");
+            let filename = uri.path().split('/').next_back().unwrap_or("untitled");
             processed_content = processed_content.replace("{{ filename }}", filename);
         }
 
@@ -351,14 +378,14 @@ impl BkmrLspBackend {
 
         let mut completion_item = CompletionItem {
             label: label.clone(),
-            kind: Some(CompletionItemKind::SNIPPET),  // TODO: Snippet, TEXT
-            detail: Some(format!("bkmr snippet")),
+            kind: Some(CompletionItemKind::SNIPPET), // TODO: Snippet, TEXT
+            detail: Some("bkmr snippet".to_string()),
             documentation: Some(Documentation::String(if snippet_content.len() > 500 {
                 format!("{}...", &snippet_content[..500])
             } else {
                 snippet_content.clone()
             })),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),  // TODO: Snippet, PLAIN_TEXT
+            insert_text_format: Some(InsertTextFormat::SNIPPET), // TODO: Snippet, PLAIN_TEXT
             filter_text: Some(label.clone()),
             sort_text: Some(label.clone()),
             ..Default::default()
@@ -566,9 +593,10 @@ impl BkmrLspBackend {
     #[cfg(test)]
     pub fn translate_rust_patterns_static(content: &str, language_id: &str, uri: &Url) -> String {
         let target_lang = Self::get_language_info_static(language_id);
-        
+
         // Use line-by-line processing to preserve newlines
-        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang);
+        let mut processed_content =
+            Self::translate_rust_patterns_line_by_line(content, &target_lang);
 
         // Handle block comments (these can span multiple lines)
         if let Some((target_start, target_end)) = &target_lang.block_comment {
@@ -576,14 +604,16 @@ impl BkmrLspBackend {
                 .dot_matches_new_line(true)
                 .build()
                 .expect("compile block comment regex");
-            processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{}", target_start, &caps[1], target_end)
-            }).to_string();
+            processed_content = block_comment_regex
+                .replace_all(&processed_content, |caps: &regex::Captures| {
+                    format!("{}{}{}", target_start, &caps[1], target_end)
+                })
+                .to_string();
         }
 
         // Replace filename
         if processed_content.contains("{{ filename }}") {
-            let filename = uri.path().split('/').last().unwrap_or("untitled");
+            let filename = uri.path().split('/').next_back().unwrap_or("untitled");
             processed_content = processed_content.replace("{{ filename }}", filename);
         }
 
@@ -594,11 +624,11 @@ impl BkmrLspBackend {
     fn get_comment_syntax(&self, file_path: &str) -> &'static str {
         let path = Path::new(file_path);
         let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        
+
         // Map file extension to language ID for language info lookup
         let language_id = match extension {
             "rs" => "rust",
-            "js" | "mjs" => "javascript", 
+            "js" | "mjs" => "javascript",
             "ts" | "tsx" => "typescript",
             "py" | "pyw" => "python",
             "go" => "go",
@@ -620,7 +650,7 @@ impl BkmrLspBackend {
             "vim" => "vim",
             _ => "unknown",
         };
-        
+
         let lang_info = self.get_language_info(language_id);
         // Return line comment or block comment start, fallback to #
         if let Some(_line_comment) = &lang_info.line_comment {
@@ -628,7 +658,8 @@ impl BkmrLspBackend {
             // but the LanguageInfo returns String. For the legacy method,
             // we'll use a simple lookup.
             match language_id {
-                "rust" | "javascript" | "typescript" | "go" | "java" | "c" | "cpp" | "swift" | "kotlin" | "scss" | "php" => "//",
+                "rust" | "javascript" | "typescript" | "go" | "java" | "c" | "cpp" | "swift"
+                | "kotlin" | "scss" | "php" => "//",
                 "python" | "shell" | "yaml" => "#",
                 "html" | "markdown" | "xml" => "<!--",
                 "css" => "/*",
@@ -899,15 +930,25 @@ impl LanguageServer for BkmrLspBackend {
             (String::new(), None)
         };
 
-        match self.fetch_snippets(if query_str.is_empty() { None } else { Some(&query_str) }, language_id.as_deref()).await {
+        match self
+            .fetch_snippets(
+                if query_str.is_empty() {
+                    None
+                } else {
+                    Some(&query_str)
+                },
+                language_id.as_deref(),
+            )
+            .await
+        {
             Ok(snippets) => {
                 let completion_items: Vec<CompletionItem> = snippets
                     .iter()
                     .map(|snippet| {
                         self.snippet_to_completion_item_with_trigger(
-                            snippet, 
-                            &query_str, 
-                            replacement_range.clone(),
+                            snippet,
+                            &query_str,
+                            replacement_range,
                             language_id.as_deref().unwrap_or("unknown"),
                             uri,
                         )
@@ -1046,18 +1087,16 @@ impl LanguageServer for BkmrLspBackend {
 
 /// Start a bkmr-lsp server with given input/output streams
 /// This function is used by tests to spawn a real LSP server for testing
-pub async fn start_server<I, O>(read: I, write: O) 
+pub async fn start_server<I, O>(read: I, write: O)
 where
     I: tokio::io::AsyncRead + Unpin,
     O: tokio::io::AsyncWrite,
 {
     use tower_lsp::{LspService, Server};
-    
+
     // Create the LSP service
-    let (service, socket) = LspService::new(|client| {
-        BkmrLspBackend::new(client)
-    });
-    
+    let (service, socket) = LspService::new(BkmrLspBackend::new);
+
     // Start the server with the provided streams
     Server::new(read, write, socket).serve(service).await;
 }

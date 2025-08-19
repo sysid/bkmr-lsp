@@ -5,7 +5,7 @@ use tokio::sync::RwLock;
 use tower_lsp::lsp_types::{Position, Range, Url};
 use tracing::{debug, instrument};
 
-use crate::domain::{CompletionQuery, CompletionContext};
+use crate::domain::{CompletionContext, CompletionQuery};
 
 /// Service for managing document state and extracting completion queries
 #[derive(Debug)]
@@ -26,7 +26,12 @@ impl DocumentService {
 
     /// Register a new document
     #[instrument(skip(self, content))]
-    pub async fn open_document(&self, uri: String, language_id: String, content: String) -> Result<()> {
+    pub async fn open_document(
+        &self,
+        uri: String,
+        language_id: String,
+        content: String,
+    ) -> Result<()> {
         debug!("Opening document: {} (language: {})", uri, language_id);
 
         {
@@ -79,8 +84,12 @@ impl DocumentService {
 
     /// Extract completion context from document position
     #[instrument(skip(self))]
-    pub async fn extract_completion_context(&self, uri: &Url, position: Position) -> Result<CompletionContext> {
-        let language_id = self.get_language_id(&uri.to_string()).await;
+    pub async fn extract_completion_context(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Result<CompletionContext> {
+        let language_id = self.get_language_id(uri.as_ref()).await;
         let mut context = CompletionContext::new(uri.clone(), position, language_id);
 
         if let Some(query) = self.extract_snippet_query(uri, position).await? {
@@ -92,9 +101,14 @@ impl DocumentService {
 
     /// Extract word backwards from cursor position and return both query and range
     #[instrument(skip(self))]
-    async fn extract_snippet_query(&self, uri: &Url, position: Position) -> Result<Option<CompletionQuery>> {
+    async fn extract_snippet_query(
+        &self,
+        uri: &Url,
+        position: Position,
+    ) -> Result<Option<CompletionQuery>> {
         let cache = self.document_cache.read().await;
-        let content = cache.get(&uri.to_string())
+        let content = cache
+            .get(&uri.to_string())
             .ok_or_else(|| anyhow::anyhow!("Document not found in cache"))
             .context("retrieve document from cache")?;
 
@@ -111,8 +125,11 @@ impl DocumentService {
         }
 
         let before_cursor = &line[..char_pos];
-        debug!("Extracting from line: '{}', char_pos: {}, before_cursor: '{}'", line, char_pos, before_cursor);
-        
+        debug!(
+            "Extracting from line: '{}', char_pos: {}, before_cursor: '{}'",
+            line, char_pos, before_cursor
+        );
+
         // Extract word backwards from cursor - find where the word starts
         let word_start = before_cursor
             .char_indices()
@@ -121,14 +138,14 @@ impl DocumentService {
             .last()
             .map(|(i, _)| i)
             .unwrap_or(char_pos);
-        
+
         debug!("Word boundaries: start={}, end={}", word_start, char_pos);
 
         if word_start < char_pos {
             let word = &before_cursor[word_start..];
             if !word.is_empty() && word.chars().any(|c| c.is_alphanumeric()) {
                 debug!("Extracted word: '{}' from position {}", word, char_pos);
-                
+
                 // Create range for the word to be replaced
                 let range = Range {
                     start: Position {
@@ -140,7 +157,7 @@ impl DocumentService {
                         character: char_pos as u32,
                     },
                 };
-                
+
                 return Ok(Some(CompletionQuery::new(word.to_string(), range)));
             }
         }
@@ -170,7 +187,9 @@ mod tests {
         let content = "fn main() {}".to_string();
 
         // Act
-        let result = service.open_document(uri.clone(), language_id.clone(), content.clone()).await;
+        let result = service
+            .open_document(uri.clone(), language_id.clone(), content.clone())
+            .await;
 
         // Assert
         assert!(result.is_ok());
@@ -185,9 +204,15 @@ mod tests {
         let uri_str = "file:///test.rs".to_string();
         let uri = Url::parse(&uri_str).expect("parse URI");
         let content = "hello world".to_string();
-        let position = Position { line: 0, character: 5 }; // End of "hello"
+        let position = Position {
+            line: 0,
+            character: 5,
+        }; // End of "hello"
 
-        service.open_document(uri_str, "rust".to_string(), content).await.expect("open document");
+        service
+            .open_document(uri_str, "rust".to_string(), content)
+            .await
+            .expect("open document");
 
         // Act
         let result = service.extract_completion_context(&uri, position).await;
@@ -206,9 +231,15 @@ mod tests {
         let uri_str = "file:///test.rs".to_string();
         let uri = Url::parse(&uri_str).expect("parse URI");
         let content = "   ".to_string(); // Only whitespace
-        let position = Position { line: 0, character: 2 };
+        let position = Position {
+            line: 0,
+            character: 2,
+        };
 
-        service.open_document(uri_str, "rust".to_string(), content).await.expect("open document");
+        service
+            .open_document(uri_str, "rust".to_string(), content)
+            .await
+            .expect("open document");
 
         // Act
         let result = service.extract_completion_context(&uri, position).await;
@@ -224,8 +255,11 @@ mod tests {
         // Arrange
         let service = DocumentService::new();
         let uri = "file:///test.rs".to_string();
-        
-        service.open_document(uri.clone(), "rust".to_string(), "content".to_string()).await.expect("open document");
+
+        service
+            .open_document(uri.clone(), "rust".to_string(), "content".to_string())
+            .await
+            .expect("open document");
         assert!(service.get_language_id(&uri).await.is_some());
 
         // Act

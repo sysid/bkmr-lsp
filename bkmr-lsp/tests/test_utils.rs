@@ -1,12 +1,12 @@
 // Test utilities for LSP server testing
 
+use bkmr_lsp::BkmrSnippet;
 use std::pin::Pin;
 use std::str::FromStr;
 use std::task::{Context, Poll};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 use tower_lsp::jsonrpc;
-use bkmr_lsp::BkmrSnippet;
 
 /// Async input stream for mock LSP communication
 pub struct AsyncIn(UnboundedReceiver<String>);
@@ -29,10 +29,11 @@ fn encode_message(content_type: Option<&str>, message: &str) -> String {
 }
 
 /// Parse multiple LSP messages from a single response string
+#[allow(dead_code)]
 fn parse_lsp_messages(response: &str) -> Vec<String> {
     let mut messages = Vec::new();
     let mut remaining = response;
-    
+
     while !remaining.is_empty() {
         // Look for Content-Length header
         if let Some(content_length_start) = remaining.find("Content-Length: ") {
@@ -44,7 +45,8 @@ fn parse_lsp_messages(response: &str) -> Vec<String> {
                     if let Ok(content_length) = length_str[..length_end].parse::<usize>() {
                         let message_start = content_length_start + header_end + 4; // Skip past \r\n\r\n
                         if message_start + content_length <= remaining.len() {
-                            let message = remaining[message_start..message_start + content_length].to_string();
+                            let message = remaining[message_start..message_start + content_length]
+                                .to_string();
                             messages.push(message);
                             remaining = &remaining[message_start + content_length..];
                             continue;
@@ -53,17 +55,19 @@ fn parse_lsp_messages(response: &str) -> Vec<String> {
                 }
             }
         }
-        
+
         // If we can't parse a proper LSP message, try to extract JSON from the end
         // This is a fallback for malformed responses
         if let Some(last_line) = remaining.split('\n').last() {
-            if !last_line.trim().is_empty() && (last_line.contains("jsonrpc") || last_line.starts_with('{')) {
+            if !last_line.trim().is_empty()
+                && (last_line.contains("jsonrpc") || last_line.starts_with('{'))
+            {
                 messages.push(last_line.to_string());
             }
         }
         break;
     }
-    
+
     messages
 }
 
@@ -109,7 +113,9 @@ impl AsyncWrite for AsyncOut {
 
 /// Real test context that spawns an actual LSP server for comprehensive testing
 pub struct TestContext {
+    #[allow(dead_code)]
     pub request_tx: UnboundedSender<String>,
+    #[allow(dead_code)]
     pub response_rx: UnboundedReceiver<String>,
     pub _server: tokio::task::JoinHandle<()>,
     pub _client: tokio::task::JoinHandle<()>,
@@ -125,7 +131,7 @@ impl TestContext {
     /// Create a new test context with real LSP server spawning
     pub fn new() -> Self {
         use tokio::sync::mpsc;
-        
+
         let (request_tx, rx) = mpsc::unbounded_channel::<String>();
         let (tx, mut client_response_rx) = mpsc::unbounded_channel::<String>();
         let (client_tx, response_rx) = mpsc::unbounded_channel::<String>();
@@ -133,9 +139,7 @@ impl TestContext {
         let async_in = AsyncIn(rx);
         let async_out = AsyncOut(tx);
 
-        let server = tokio::spawn(async move {
-            bkmr_lsp::start_server(async_in, async_out).await
-        });
+        let server = tokio::spawn(async move { bkmr_lsp::start_server(async_in, async_out).await });
 
         let client = tokio::spawn(async move {
             loop {
@@ -157,6 +161,7 @@ impl TestContext {
     }
 
     /// Send multiple LSP messages in sequence
+    #[allow(dead_code)]
     pub async fn send_all(&mut self, messages: &[&str]) -> anyhow::Result<()> {
         for message in messages {
             self.send(&jsonrpc::Request::from_str(message)?).await?;
@@ -165,6 +170,7 @@ impl TestContext {
     }
 
     /// Send a single LSP request
+    #[allow(dead_code)]
     pub async fn send(&mut self, request: &jsonrpc::Request) -> anyhow::Result<()> {
         self.request_tx
             .send(encode_message(None, &serde_json::to_string(request)?))?;
@@ -172,6 +178,7 @@ impl TestContext {
     }
 
     /// Receive and parse an LSP response
+    #[allow(dead_code)]
     pub async fn recv<R: std::fmt::Debug + serde::de::DeserializeOwned>(
         &mut self,
     ) -> anyhow::Result<R> {
@@ -181,22 +188,22 @@ impl TestContext {
                 .recv()
                 .await
                 .ok_or_else(|| anyhow::anyhow!("empty response"))?;
-            
+
             tracing::debug!("Received raw response: {}", response);
-            
+
             // Parse potentially multiple LSP messages from the response
             let messages = parse_lsp_messages(&response);
             tracing::debug!("Parsed {} messages from response", messages.len());
-            
+
             for message in messages {
                 tracing::debug!("Processing message: {}", message);
-                
+
                 // Skip log messages
                 if message.contains("window/logMessage") {
                     tracing::debug!("Skipping log message: {}", message);
                     continue;
                 }
-                
+
                 // Try to parse as JSON-RPC response
                 match serde_json::from_str::<jsonrpc::Response>(&message) {
                     Ok(response) => {
@@ -213,19 +220,24 @@ impl TestContext {
                         }
                     }
                     Err(e) => {
-                        tracing::debug!("Failed to parse message as JSON-RPC response: {} - Error: {}", message, e);
+                        tracing::debug!(
+                            "Failed to parse message as JSON-RPC response: {} - Error: {}",
+                            message,
+                            e
+                        );
                         // Continue to next message instead of failing immediately
                         continue;
                     }
                 }
             }
-            
+
             // If no valid response was found in this batch, wait for the next response
             tracing::debug!("No valid response found in message batch, waiting for next response");
         }
     }
 
     /// Send a request and wait for response
+    #[allow(dead_code)]
     pub async fn request<R: std::fmt::Debug + serde::de::DeserializeOwned>(
         &mut self,
         request: &jsonrpc::Request,
@@ -235,9 +247,10 @@ impl TestContext {
     }
 
     /// Send initialize request and wait for response
+    #[allow(dead_code)]
     pub async fn initialize(&mut self) -> anyhow::Result<()> {
         use tower_lsp::lsp_types;
-        
+
         let request = jsonrpc::Request::build("initialize")
             .id(1)
             .params(serde_json::json!({"capabilities":{}}))
@@ -286,11 +299,13 @@ impl SnippetBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_description(mut self, description: &str) -> Self {
         self.snippet.description = description.to_string();
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_tags(mut self, tags: Vec<&str>) -> Self {
         self.snippet.tags = tags.into_iter().map(|s| s.to_string()).collect();
         self
@@ -310,6 +325,7 @@ impl SnippetBuilder {
         self
     }
 
+    #[allow(dead_code)]
     pub fn with_universal_tag(mut self) -> Self {
         if !self.snippet.tags.contains(&"universal".to_string()) {
             self.snippet.tags.push("universal".to_string());
@@ -348,7 +364,7 @@ mod tests {
         let msg = r#"{"test": "message"}"#;
         let encoded = encode_message(None, msg);
         let expected_length = msg.len();
-        
+
         assert!(encoded.contains(&format!("Content-Length: {}", expected_length)));
         assert!(encoded.ends_with(msg));
     }

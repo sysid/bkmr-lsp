@@ -9,7 +9,7 @@ use test_utils::TestContext;
 #[test_log::test(tokio::test)]
 async fn test_lsp_initialize() -> anyhow::Result<()> {
     let mut context = TestContext::new();
-    
+
     let request = jsonrpc::Request::build("initialize")
         .id(1)
         .params(serde_json::json!({
@@ -25,9 +25,7 @@ async fn test_lsp_initialize() -> anyhow::Result<()> {
         }))
         .finish();
 
-    let response = context
-        .request::<InitializeResult>(&request)
-        .await?;
+    let response = context.request::<InitializeResult>(&request).await?;
 
     // Verify server capabilities
     assert!(response.capabilities.completion_provider.is_some());
@@ -35,10 +33,14 @@ async fn test_lsp_initialize() -> anyhow::Result<()> {
         response.capabilities.text_document_sync,
         Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL))
     );
-    
+
     // Verify execute command provider for bkmr commands
     if let Some(exec_provider) = response.capabilities.execute_command_provider {
-        assert!(exec_provider.commands.contains(&"bkmr.insertFilepathComment".to_string()));
+        assert!(
+            exec_provider
+                .commands
+                .contains(&"bkmr.insertFilepathComment".to_string())
+        );
     }
 
     Ok(())
@@ -50,50 +52,53 @@ async fn test_lsp_document_lifecycle() -> anyhow::Result<()> {
     context.initialize().await?;
 
     // Test document open
-    let did_open_request = jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/didOpen",
-        "params": {
-            "textDocument": {
-                "languageId": "rust",
-                "text": ":hello world",
-                "uri": "file:///tmp/test.rs",
-                "version": 0
+    let did_open_request =
+        jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didOpen",
+            "params": {
+                "textDocument": {
+                    "languageId": "rust",
+                    "text": ":hello world",
+                    "uri": "file:///tmp/test.rs",
+                    "version": 0
+                }
             }
-        }
-    }))?)?;
-    
+        }))?)?;
+
     context.send(&did_open_request).await?;
 
     // Test document change
-    let did_change_request = jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/didChange",
-        "params": {
-            "textDocument": {
-                "uri": "file:///tmp/test.rs",
-                "version": 1
-            },
-            "contentChanges": [{
-                "text": ":hello rust world"
-            }]
-        }
-    }))?)?;
-    
+    let did_change_request =
+        jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didChange",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/test.rs",
+                    "version": 1
+                },
+                "contentChanges": [{
+                    "text": ":hello rust world"
+                }]
+            }
+        }))?)?;
+
     context.send(&did_change_request).await?;
 
     // Test document save
-    let did_save_request = jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "textDocument/didSave",
-        "params": {
-            "textDocument": {
-                "uri": "file:///tmp/test.rs"
-            },
-            "text": ":hello rust world"
-        }
-    }))?)?;
-    
+    let did_save_request =
+        jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/didSave",
+            "params": {
+                "textDocument": {
+                    "uri": "file:///tmp/test.rs"
+                },
+                "text": ":hello rust world"
+            }
+        }))?)?;
+
     context.send(&did_save_request).await?;
 
     // If we get here without errors, the document lifecycle works
@@ -126,8 +131,10 @@ async fn test_lsp_completion_basic() -> anyhow::Result<()> {
 
     // Note: This test might not find actual completions if bkmr is not configured
     // but it tests the LSP protocol communication
-    let result = context.request::<Option<CompletionResponse>>(&completion_request).await;
-    
+    let result = context
+        .request::<Option<CompletionResponse>>(&completion_request)
+        .await;
+
     // We mainly want to ensure the LSP communication works without errors
     // The actual completion results depend on bkmr configuration
     match result {
@@ -135,7 +142,10 @@ async fn test_lsp_completion_basic() -> anyhow::Result<()> {
             tracing::info!("Completion request successful");
         }
         Err(e) => {
-            tracing::warn!("Completion request failed (expected if bkmr not configured): {}", e);
+            tracing::warn!(
+                "Completion request failed (expected if bkmr not configured): {}",
+                e
+            );
             // This is acceptable in test environment
         }
     }
@@ -165,8 +175,10 @@ async fn test_lsp_execute_command() -> anyhow::Result<()> {
         }))
         .finish();
 
-    let result = context.request::<Option<serde_json::Value>>(&execute_command_request).await;
-    
+    let result = context
+        .request::<Option<serde_json::Value>>(&execute_command_request)
+        .await;
+
     // The command should execute without error
     match result {
         Ok(_) => {
@@ -187,18 +199,19 @@ async fn test_lsp_configuration_change() -> anyhow::Result<()> {
     context.initialize().await?;
 
     // Test configuration change
-    let config_change_request = jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
-        "jsonrpc": "2.0",
-        "method": "workspace/didChangeConfiguration",
-        "params": {
-            "settings": {
-                "bkmr": {
-                    "maxCompletions": 100
+    let config_change_request =
+        jsonrpc::Request::from_str(&serde_json::to_string(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "method": "workspace/didChangeConfiguration",
+            "params": {
+                "settings": {
+                    "bkmr": {
+                        "maxCompletions": 100
+                    }
                 }
             }
-        }
-    }))?)?;
-    
+        }))?)?;
+
     context.send(&config_change_request).await?;
 
     // If we get here without errors, configuration change works
@@ -217,7 +230,7 @@ async fn test_lsp_configuration_change() -> anyhow::Result<()> {
 //         .finish();
 //
 //     let response = context.request::<serde_json::Value>(&shutdown_request).await?;
-//     
+//
 //     // Shutdown should return null
 //     assert_eq!(response, serde_json::Value::Null);
 //
@@ -254,8 +267,12 @@ async fn test_lsp_multiple_documents() -> anyhow::Result<()> {
         .finish();
 
     // Test that the server can handle multiple document contexts
-    let _rust_result = context.request::<Option<CompletionResponse>>(&rust_completion).await;
-    let _python_result = context.request::<Option<CompletionResponse>>(&python_completion).await;
+    let _rust_result = context
+        .request::<Option<CompletionResponse>>(&rust_completion)
+        .await;
+    let _python_result = context
+        .request::<Option<CompletionResponse>>(&python_completion)
+        .await;
 
     // If we get here without panics/errors, multi-document handling works
     Ok(())

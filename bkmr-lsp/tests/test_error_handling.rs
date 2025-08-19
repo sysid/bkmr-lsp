@@ -14,7 +14,7 @@ async fn test_config_edge_cases() {
         bkmr_binary: "".to_string(),
         max_completions: 0,
     };
-    
+
     assert_eq!(config.bkmr_binary, "");
     assert_eq!(config.max_completions, 0);
 }
@@ -25,9 +25,10 @@ async fn test_timeout_handling() {
     let start = std::time::Instant::now();
     let result = timeout(
         Duration::from_millis(100),
-        tokio::time::sleep(Duration::from_millis(200))
-    ).await;
-    
+        tokio::time::sleep(Duration::from_millis(200)),
+    )
+    .await;
+
     assert!(result.is_err()); // Should timeout
     assert!(start.elapsed() < Duration::from_millis(150)); // Should be quick
 }
@@ -39,7 +40,7 @@ fn test_snippet_builder_edge_cases() {
         .with_title("")
         .with_content("")
         .build();
-    
+
     assert_eq!(snippet.title, "");
     assert_eq!(snippet.url, "");
 
@@ -48,7 +49,7 @@ fn test_snippet_builder_edge_cases() {
         .with_language("rust")
         .with_language("rust") // Should not duplicate
         .build();
-    
+
     // Note: Our builder correctly prevents duplicates
     assert_eq!(snippet.tags.iter().filter(|&tag| tag == "rust").count(), 1);
 }
@@ -69,7 +70,7 @@ fn test_position_validation() {
 #[test_log::test]
 fn test_config_validation() {
     let config = BkmrConfig::default();
-    
+
     // Test reasonable defaults
     assert!(!config.bkmr_binary.is_empty());
     assert!(config.max_completions > 0);
@@ -84,7 +85,7 @@ fn test_snippet_data_validation() {
         .with_content("println!(\"Unicode: 🦀\");")
         .with_description("Description with\nnewlines")
         .build();
-    
+
     assert!(snippet.title.contains("🚀"));
     assert!(snippet.url.contains("🦀"));
     assert!(snippet.description.contains("\n"));
@@ -94,7 +95,7 @@ fn test_snippet_data_validation() {
 async fn test_lsp_error_handling() {
     // Test error handling in LSP context using real TestContext
     use tower_lsp::{jsonrpc, lsp_types::*};
-    
+
     let mut context = TestContext::new();
     context.initialize().await.expect("Failed to initialize");
 
@@ -108,15 +109,23 @@ async fn test_lsp_error_handling() {
         .finish();
 
     // This should handle the error gracefully - server should return empty results
-    let result = context.request::<Option<CompletionResponse>>(&invalid_completion).await;
-    
+    let result = context
+        .request::<Option<CompletionResponse>>(&invalid_completion)
+        .await;
+
     match result {
         Ok(Some(CompletionResponse::Array(items))) => {
-            tracing::info!("Completion on non-existent document returned array with {} items", items.len());
+            tracing::info!(
+                "Completion on non-existent document returned array with {} items",
+                items.len()
+            );
             // Server should return empty array for invalid documents
         }
         Ok(Some(CompletionResponse::List(list))) => {
-            tracing::info!("Completion on non-existent document returned list with {} items", list.items.len());
+            tracing::info!(
+                "Completion on non-existent document returned list with {} items",
+                list.items.len()
+            );
             // Server should return empty list for invalid documents
         }
         Ok(None) => {
@@ -136,10 +145,15 @@ async fn test_lsp_error_handling() {
         }))
         .finish();
 
-    let result = context.request::<Option<serde_json::Value>>(&invalid_command).await;
+    let result = context
+        .request::<Option<serde_json::Value>>(&invalid_command)
+        .await;
     match result {
         Ok(response) => {
-            tracing::info!("Invalid command handled gracefully, response: {:?}", response);
+            tracing::info!(
+                "Invalid command handled gracefully, response: {:?}",
+                response
+            );
             // Server should return null for unknown commands
         }
         Err(e) => {
