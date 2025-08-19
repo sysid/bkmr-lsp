@@ -20,6 +20,14 @@ bkmr-lsp provides manual snippet completion for bkmr snippets in any LSP-compati
 
 ## Installation
 
+### Standard Installation
+
+Install directly from crates.io using cargo:
+
+```bash
+cargo install bkmr-lsp
+```
+
 ### From Source
 
 ```bash
@@ -55,7 +63,7 @@ Install an LSP extension and add to `settings.json`:
   "languageServerExample.servers": {
     "bkmr-lsp": {
       "command": "bkmr-lsp",
-      "filetypes": ["*"]
+      "filetypes": ["rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim"]
     }
   }
 }
@@ -70,7 +78,7 @@ if executable('bkmr-lsp')
     autocmd User lsp_setup call lsp#register_server({
       \ 'name': 'bkmr-lsp',
       \ 'cmd': {server_info->['bkmr-lsp']},
-      \ 'allowlist': ['*'],
+      \ 'allowlist': ['rust', 'javascript', 'typescript', 'python', 'go', 'java', 'c', 'cpp', 'html', 'css', 'scss', 'ruby', 'php', 'swift', 'kotlin', 'shell', 'yaml', 'json', 'markdown', 'xml', 'vim'],
       \ })
   augroup END
 endif
@@ -78,10 +86,11 @@ endif
 
 ### Neovim with nvim-lspconfig
 
+Basic setup:
 ```lua
 require'lspconfig'.bkmr_lsp.setup{
   cmd = { "bkmr-lsp" },
-  filetypes = { "*" },
+  filetypes = { "rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim" },
 }
 ```
 
@@ -109,22 +118,37 @@ Use manual completion to access snippets based on the current word under your cu
 
 ### Template Interpolation
 
-Snippets with templates are automatically processed:
+Snippets with templates are automatically processed ([server-side interpolation](https://github.com/sysid/bkmr/blob/main/docs/interpolation.md#template-interpolation-in-bkmr)):
 
 ```bash
 # Snippet content: {{ "pwd" | shell }}
 # Completion inserts: /Users/username/project
 ```
 
-### Language-Based Filtering
+### Language-Aware Filtering
 
-The LSP server automatically filters snippets based on the file type (language ID) provided by your editor:
+The LSP server automatically filters snippets based on the file type (language ID) provided by your editor. This ensures you only see relevant snippets for your current context.
 
-**Automatic filtering:**
-- **Rust files** (`.rs`): Shows snippets tagged with `rust` AND `universal`
-- **Python files** (`.py`): Shows snippets tagged with `python` AND `universal`
-- **JavaScript files** (`.js`): Shows snippets tagged with `javascript` AND `universal`
-- **And more**: Supports all LSP language identifiers
+**How it works:**
+1. **Language Detection**: When you open a file, the LSP client sends the language ID (e.g., `rust`, `python`, `javascript`)
+2. **Smart Filtering**: Shows snippets tagged with your current language PLUS universal snippets
+3. **FTS Query**: Builds optimized full-text search queries for bkmr
+
+**Supported Languages:**
+| Language | File Extensions | LSP Language ID |
+|----------|----------------|-----------------|
+| Rust | `.rs` | `rust` |
+| Python | `.py` | `python` |
+| JavaScript | `.js` | `javascript` |
+| TypeScript | `.ts`, `.tsx` | `typescript` |
+| Go | `.go` | `go` |
+| Java | `.java` | `java` |
+| C/C++ | `.c`, `.cpp`, `.cc` | `c`, `cpp` |
+| Shell | `.sh`, `.bash` | `shell`, `sh` |
+| YAML | `.yaml`, `.yml` | `yaml` |
+| JSON | `.json` | `json` |
+| Markdown | `.md` | `markdown` |
+| And many more... | | |
 
 **Setting up language-specific snippets:**
 ```bash
@@ -132,6 +156,15 @@ The LSP server automatically filters snippets based on the file type (language I
 bkmr add -t rust -t _snip_ 'fn main() { println!("Hello"); }' 'Rust main function'
 bkmr add -t python -t _snip_ 'if __name__ == "__main__":' 'Python main guard'  
 bkmr add -t javascript -t _snip_ 'console.log("Hello");' 'JS console log'
+bkmr add -t yaml -t _snip_ 'version: "3.8"' 'Docker Compose version'
+```
+
+**Query Examples:**
+```bash
+# What the LSP server generates for different languages:
+# Rust file: (tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")
+# Python file: (tags:python AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")
+# With word filter: ((tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")) AND metadata:hello*
 ```
 
 ### Universal Snippets
@@ -181,13 +214,66 @@ Insert the relative filepath as a comment at the beginning of the file.
   - SQL (`--`): SQL files
   - And many more (Lua, Haskell, Lisp, VimScript, Batch, PowerShell, LaTeX, Fortran, MATLAB)
 
-**Example:**
+**Example output:**
 ```rust
-// src/backend.rs
+// src/backend.rs  <---
 use tower_lsp::LanguageServer;
 ```
 
-**Usage in LSP Clients:**
+**Neovim Configuration with Custom Commands:**
+
+```lua
+if vim.fn.executable('bkmr-lsp') == 1 then
+    local lspconfig = require('lspconfig')
+    local configs = require('lspconfig.configs')
+
+    -- Register bkmr_lsp if not already registered
+    if not configs.bkmr_lsp then
+        configs.bkmr_lsp = {
+            default_config = {
+                cmd = { 'bkmr-lsp' },
+                filetypes = { 'markdown', 'text', 'lua', 'python', 'rust', 'javascript', 'typescript', 'sh', 'bash', 'yaml', 'toml', 'json' },
+                root_dir = function(fname)
+                    return lspconfig.util.find_git_ancestor(fname) or vim.fn.getcwd()
+                end,
+                settings = {},
+            },
+        }
+    end
+
+    lspconfig.bkmr_lsp.setup({
+        capabilities = require('cmp_nvim_lsp').default_capabilities(),
+        settings = {
+            bkmr = {
+                enableIncrementalCompletion = false
+            }
+        },
+        on_attach = function(client, bufnr)
+            -- Create bkmr-lsp custom commands
+            vim.api.nvim_create_user_command('BkmrInsertPath', function()
+                -- Use the modern LSP API and correct argument format
+                vim.lsp.buf_request(0, 'workspace/executeCommand', {
+                    command = "bkmr.insertFilepathComment",
+                    arguments = {
+                        vim.uri_from_bufnr(0)  -- Pass URI as string, not object
+                    }
+                }, function(err, result)
+                    if err then
+                        vim.notify("Error executing bkmr command: " .. tostring(err), vim.log.levels.ERROR)
+                    elseif result then
+                        -- The server returns a WorkspaceEdit that should be applied
+                        vim.lsp.util.apply_workspace_edit(result, client.offset_encoding)
+                    end
+                end)
+            end, { desc = "Insert filepath comment via bkmr-lsp" })
+            
+            -- Additional bkmr-lsp commands can be added here
+        end
+    })
+end
+```
+
+**Usage in Other LSP Clients:**
 Most LSP clients can execute this command programmatically. For IntelliJ Platform IDEs, use the [bkmr-intellij-plugin](../bkmr-intellij-plugin) which provides UI integration.
 
 
@@ -254,10 +340,25 @@ cargo test integration_test          # bkmr CLI integration
 
 The project includes several development and testing scripts:
 
+**Build and Development:**
 ```bash
-# Build and install LSP server for development
-make install-debug
+# Quick development cycle
+make all-fast                    # Debug build + install (symlinked)
+make build-fast                  # Debug build only
+make install-debug               # Install debug version to ~/bin
 
+# Release builds
+make build                       # Release build with optimizations
+make install                     # Install release version
+
+# Code quality
+make format                      # Format code with cargo fmt
+make lint                        # Run clippy with fixes
+make test                        # Run all tests
+```
+
+**Demo and Testing Scripts:**
+```bash
 # Language filtering demonstration
 ./scripts/demo_language_filtering.py
 
@@ -269,6 +370,20 @@ make install-debug
 
 # Integration testing
 ./scripts/integration_test.sh
+
+# LSP protocol testing
+./scripts/test_lsp.py
+./scripts/test_lsp.sh
+```
+
+**Development Logging:**
+```bash
+# View LSP server logs during development
+make log-lsp                     # Tail LSP server logs (JSON formatted)
+make log-plugin                  # Tail IntelliJ plugin logs (filtered)
+
+# Clear logs and reset development environment
+make init                        # Clear logs and reset
 ```
 
 These scripts demonstrate various features including language detection, completion behavior, and universal snippet translation.
@@ -333,41 +448,30 @@ Using language filter: rust
 
 ## Implementation Details
 
-### Language Filtering Architecture
+### Architecture Overview
 
-The LSP server implements language-aware filtering through:
+The LSP server implements efficient language-aware filtering and universal snippet processing:
 
-1. **Language ID Capture**: When a document is opened via `textDocument/didOpen`, the server captures and caches the `language_id` field from the `TextDocumentItem`
+**Core Components:**
+1. **Language ID Capture**: Captures and caches language IDs from `textDocument/didOpen` events
+2. **FTS Query Building**: Builds optimized Full Text Search queries combining language-specific and universal snippets
+3. **Universal Translation**: Automatically translates Rust syntax patterns to target languages using regex-based processing
+4. **Cache Management**: Maintains document language state and cleans up on document close
 
-2. **FTS Query Building**: During completion requests, the server builds FTS (Full Text Search) queries that combine language-specific and universal snippets:
-   ```bash
-   # For Rust files:
-   bkmr search --json --interpolate --limit 50 '(tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")'
-   
-   # For Python files:
-   bkmr search --json --interpolate --limit 50 '(tags:python AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")'
-   
-   # With word-based filtering:
-   bkmr search --json --interpolate --limit 50 '((tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")) AND metadata:hello*'
-   ```
+**Processing Flow:**
+```
+Document Open → Language ID Cache → Completion Request → FTS Query Build → 
+bkmr CLI Call → Universal Translation → LSP Response
+```
 
-3. **Universal Snippet Processing**: Snippets tagged with "universal" are automatically translated from Rust syntax to the target language using regex-based pattern matching
+**Example FTS Queries:**
+```bash
+# Language-specific with universal fallback
+(tags:python AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")
 
-4. **Cache Management**: Language IDs are stored per document URI and cleaned up when documents are closed
-
-### Common Language Identifiers
-
-LSP clients typically provide these language identifiers:
-- `rust` - Rust files (.rs)
-- `python` - Python files (.py)
-- `javascript` - JavaScript files (.js)
-- `typescript` - TypeScript files (.ts)
-- `java` - Java files (.java)
-- `c` - C files (.c)
-- `cpp` - C++ files (.cpp, .cc, .cxx)
-- `go` - Go files (.go)
-- `shell` - Shell scripts (.sh, .bash)
-- And many more...
+# With word-based filtering
+((tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")) AND metadata:config*
+```
 
 ## Protocol Support
 

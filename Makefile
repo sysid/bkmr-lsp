@@ -33,7 +33,7 @@ ADMIN::  ## ##################################################################
 .PHONY: init
 init:  ## init
 	@rm -fv ~/bkmr-lsp.log
-	@rm -fv /Users/Q187392/dev/s/public/bkmr-intellij-plugin/build/idea-sandbox/IU-2025.1.1.1/log/idea.log
+	@rm -fv $(HOME)/dev/s/public/bkmr-intellij-plugin/build/idea-sandbox/IU-2025.1.1.1/log/idea.log
 
 .PHONY: test
 test:  ## tests, single-threaded
@@ -41,7 +41,7 @@ test:  ## tests, single-threaded
 
 .PHONY: log-plugin
 log-plugin:  ## log-plugin
-	tail -f /Users/Q187392/dev/s/public/bkmr-intellij-plugin/build/idea-sandbox/IU-2025.1.1.1/log/idea.log | grep -u completion
+	tail -f $(HOME)/dev/s/public/bkmr-intellij-plugin/build/idea-sandbox/IU-2025.1.1.1/log/idea.log | grep -u completion
 
 .PHONY: log-lsp
 log-lsp:  ## log-lsp
