@@ -27,7 +27,7 @@ impl BkmrRepository {
 
         // Build FTS query that combines language-specific and universal snippets
         let mut fts_parts = Vec::new();
-        
+
         // Add language + universal snippet query
         if let Some(snippet_query) = filter.build_fts_query() {
             fts_parts.push(format!("({})", snippet_query));
@@ -89,10 +89,13 @@ impl BkmrRepository {
             return Ok(Vec::new());
         }
 
-        let snippets: Vec<BkmrSnippet> = serde_json::from_str(&stdout_str)
-            .context("parse bkmr JSON output")?;
+        let snippets: Vec<BkmrSnippet> =
+            serde_json::from_str(&stdout_str).context("parse bkmr JSON output")?;
 
-        info!("Successfully fetched {} interpolated snippets", snippets.len());
+        info!(
+            "Successfully fetched {} interpolated snippets",
+            snippets.len()
+        );
         Ok(snippets)
     }
 }
@@ -102,7 +105,8 @@ impl SnippetRepository for BkmrRepository {
     #[instrument(skip(self))]
     async fn fetch_snippets(&self, filter: &SnippetFilter) -> Result<Vec<Snippet>> {
         let args = self.build_command_args(filter);
-        let bkmr_snippets = self.execute_bkmr_command(&args)
+        let bkmr_snippets = self
+            .execute_bkmr_command(&args)
             .await
             .context("fetch snippets from bkmr CLI")?;
 
@@ -123,13 +127,10 @@ impl SnippetRepository for BkmrRepository {
             .args(["--help"])
             .output();
 
-        let output = tokio::time::timeout(
-            std::time::Duration::from_secs(5),
-            command_future,
-        )
-        .await
-        .context("execute bkmr health check within timeout")?
-        .context("spawn bkmr process for health check")?;
+        let output = tokio::time::timeout(std::time::Duration::from_secs(5), command_future)
+            .await
+            .context("execute bkmr health check within timeout")?
+            .context("spawn bkmr process for health check")?;
 
         if !output.status.success() {
             return Err(anyhow::anyhow!("bkmr binary is not working properly"))
@@ -188,6 +189,9 @@ mod tests {
         let args = repository.build_command_args(&filter);
 
         // Assert
-        assert!(args.iter().any(|arg| arg.contains("tags:python") && arg.contains("universal")));
+        assert!(
+            args.iter()
+                .any(|arg| arg.contains("tags:python") && arg.contains("universal"))
+        );
     }
 }

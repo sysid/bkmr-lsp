@@ -64,7 +64,7 @@ async fn test_snippet_builder() {
 #[test_log::test]
 fn test_snippet_tags() {
     let mut snippet = SnippetBuilder::new().build();
-    
+
     // Test initial state
     assert_eq!(snippet.tags, vec!["test"]);
 

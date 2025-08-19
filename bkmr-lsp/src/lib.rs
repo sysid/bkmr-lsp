@@ -7,9 +7,9 @@ pub use backend::*;
 
 #[cfg(test)]
 mod tests {
-    use tower_lsp::lsp_types::Url;
-    use crate::domain::{BkmrSnippet, SnippetFilter, LanguageRegistry};
+    use crate::domain::{BkmrSnippet, LanguageRegistry, SnippetFilter};
     use crate::services::LanguageTranslator;
+    use tower_lsp::lsp_types::Url;
 
     #[test]
     fn given_universal_and_regular_snippets_when_checking_tags_then_detects_universal_correctly() {
@@ -22,7 +22,7 @@ mod tests {
             tags: vec!["universal".to_string(), "test".to_string()],
             access_count: 0,
         };
-        
+
         let regular_snippet = BkmrSnippet {
             id: 2,
             title: "Test Regular Snippet".to_string(),
@@ -31,7 +31,7 @@ mod tests {
             tags: vec!["rust".to_string(), "test".to_string()],
             access_count: 0,
         };
-        
+
         // Act & Assert
         assert!(universal_snippet.tags.contains(&"universal".to_string()));
         assert!(!regular_snippet.tags.contains(&"universal".to_string()));
@@ -44,37 +44,43 @@ mod tests {
         let rust_content = r#"// This is a line comment
     // Indented comment
 let x = 5; // End of line comment"#;
-        
+
         // Act
-        let python_result = LanguageTranslator::translate_rust_patterns(rust_content, "python", &uri).expect("translation should succeed");
-        
+        let python_result =
+            LanguageTranslator::translate_rust_patterns(rust_content, "python", &uri)
+                .expect("translation should succeed");
+
         // Assert
         assert!(python_result.contains("# This is a line comment"));
         assert!(python_result.contains("    # Indented comment"));
         assert!(python_result.contains("let x = 5; # End of line comment"));
-        
+
         // Test with HTML (no line comments)
-        let html_result = LanguageTranslator::translate_rust_patterns(rust_content, "html", &uri).expect("translation should succeed");
+        let html_result = LanguageTranslator::translate_rust_patterns(rust_content, "html", &uri)
+            .expect("translation should succeed");
         assert!(html_result.contains("<!-- This is a line comment -->"));
-        assert!(html_result.contains("  <!-- Indented comment -->"));  // HTML uses 2 spaces
+        assert!(html_result.contains("  <!-- Indented comment -->")); // HTML uses 2 spaces
         assert!(html_result.contains("let x = 5; <!-- End of line comment -->"));
     }
 
     #[test]
     fn test_rust_block_comment_translation() {
         let uri = Url::parse("file:///test/example.py").expect("valid test URI");
-        
+
         let rust_content = r#"/* This is a block comment */
 /*
 Multi-line
 block comment
 */"#;
-        
-        let python_result = LanguageTranslator::translate_rust_patterns(rust_content, "python", &uri).expect("translation should succeed");
+
+        let python_result =
+            LanguageTranslator::translate_rust_patterns(rust_content, "python", &uri)
+                .expect("translation should succeed");
         assert!(python_result.contains("\"\"\" This is a block comment \"\"\""));
         assert!(python_result.contains("\"\"\"\nMulti-line\nblock comment\n\"\"\""));
-        
-        let html_result = LanguageTranslator::translate_rust_patterns(rust_content, "html", &uri).expect("translation should succeed");
+
+        let html_result = LanguageTranslator::translate_rust_patterns(rust_content, "html", &uri)
+            .expect("translation should succeed");
         assert!(html_result.contains("<!-- This is a block comment -->"));
         assert!(html_result.contains("<!--\nMulti-line\nblock comment\n-->"));
     }
@@ -82,22 +88,25 @@ block comment
     #[test]
     fn test_rust_indentation_translation() {
         let uri = Url::parse("file:///test/example.go").expect("valid Go test URI");
-        
+
         let rust_content = r#"fn example() {
     let x = 5;
         let y = 10;
             let z = 15;
 }"#;
-        
+
         // Go uses tabs
-        let go_result = LanguageTranslator::translate_rust_patterns(rust_content, "go", &uri).expect("translation should succeed");
+        let go_result = LanguageTranslator::translate_rust_patterns(rust_content, "go", &uri)
+            .expect("translation should succeed");
         assert!(go_result.contains("fn example() {"));
         assert!(go_result.contains("\tlet x = 5;"));
         assert!(go_result.contains("\t\tlet y = 10;"));
         assert!(go_result.contains("\t\t\tlet z = 15;"));
-        
+
         // JavaScript uses 2 spaces
-        let js_result = LanguageTranslator::translate_rust_patterns(rust_content, "javascript", &uri).expect("translation should succeed");
+        let js_result =
+            LanguageTranslator::translate_rust_patterns(rust_content, "javascript", &uri)
+                .expect("translation should succeed");
         assert!(js_result.contains("  let x = 5;"));
         assert!(js_result.contains("    let y = 10;"));
         assert!(js_result.contains("      let z = 15;"));
@@ -106,16 +115,17 @@ block comment
     #[test]
     fn test_filename_replacement() {
         let uri = Url::parse("file:///path/to/example.rs").expect("valid Rust test URI");
-        
+
         let content = "// File: {{ filename }}";
-        let result = LanguageTranslator::translate_rust_patterns(content, "rust", &uri).expect("translation should succeed");
+        let result = LanguageTranslator::translate_rust_patterns(content, "rust", &uri)
+            .expect("translation should succeed");
         assert!(result.contains("// File: example.rs"));
     }
 
     #[test]
     fn test_mixed_pattern_translation() {
         let uri = Url::parse("file:///test/example.py").expect("valid test URI");
-        
+
         let rust_content = r#"// Function: {{ function_name }}
 // File: {{ filename }}
 fn {{ function_name }}() {
@@ -123,18 +133,20 @@ fn {{ function_name }}() {
     /* Block comment here */
         let value = "hello";
 }"#;
-        
-        let python_result = LanguageTranslator::translate_rust_patterns(rust_content, "python", &uri).expect("translation should succeed");
-        
+
+        let python_result =
+            LanguageTranslator::translate_rust_patterns(rust_content, "python", &uri)
+                .expect("translation should succeed");
+
         // Check comment translation
         assert!(python_result.contains("# Function: {{ function_name }}"));
         assert!(python_result.contains("# File: example.py"));
         assert!(python_result.contains("    # TODO: implement"));
         assert!(python_result.contains("\"\"\" Block comment here \"\"\""));
-        
+
         // Check that bkmr templates are preserved
         assert!(python_result.contains("{{ function_name }}"));
-        
+
         // Check indentation (Python uses 4 spaces like Rust, so no change)
         assert!(python_result.contains("        let value = \"hello\";"));
     }
@@ -143,46 +155,59 @@ fn {{ function_name }}() {
     fn test_language_info_retrieval() {
         let rust_info = LanguageRegistry::get_language_info("rust");
         assert_eq!(rust_info.line_comment, Some("//".to_string()));
-        assert_eq!(rust_info.block_comment, Some(("/*".to_string(), "*/".to_string())));
+        assert_eq!(
+            rust_info.block_comment,
+            Some(("/*".to_string(), "*/".to_string()))
+        );
         assert_eq!(rust_info.indent_char, "    ");
-        
+
         let python_info = LanguageRegistry::get_language_info("python");
         assert_eq!(python_info.line_comment, Some("#".to_string()));
-        assert_eq!(python_info.block_comment, Some(("\"\"\"".to_string(), "\"\"\"".to_string())));
+        assert_eq!(
+            python_info.block_comment,
+            Some(("\"\"\"".to_string(), "\"\"\"".to_string()))
+        );
         assert_eq!(python_info.indent_char, "    ");
-        
+
         let go_info = LanguageRegistry::get_language_info("go");
         assert_eq!(go_info.line_comment, Some("//".to_string()));
         assert_eq!(go_info.indent_char, "\t");
-        
+
         let html_info = LanguageRegistry::get_language_info("html");
         assert_eq!(html_info.line_comment, None);
-        assert_eq!(html_info.block_comment, Some(("<!--".to_string(), "-->".to_string())));
+        assert_eq!(
+            html_info.block_comment,
+            Some(("<!--".to_string(), "-->".to_string()))
+        );
         assert_eq!(html_info.indent_char, "  ");
     }
 
     #[test]
     fn test_edge_cases() {
         let uri = Url::parse("file:///test/example.py").expect("valid test URI");
-        
+
         // Empty content
-        let result = LanguageTranslator::translate_rust_patterns("", "python", &uri).expect("translation should succeed");
+        let result = LanguageTranslator::translate_rust_patterns("", "python", &uri)
+            .expect("translation should succeed");
         assert_eq!(result, "");
-        
+
         // No Rust patterns
         let no_patterns = "Just plain text here";
-        let result = LanguageTranslator::translate_rust_patterns(no_patterns, "python", &uri).expect("translation should succeed");
+        let result = LanguageTranslator::translate_rust_patterns(no_patterns, "python", &uri)
+            .expect("translation should succeed");
         assert_eq!(result, no_patterns);
-        
+
         // Comments in strings (should not be translated)
         let string_comments = r#"let url = "https://example.com"; // Real comment"#;
-        let result = LanguageTranslator::translate_rust_patterns(string_comments, "python", &uri).expect("translation should succeed");
+        let result = LanguageTranslator::translate_rust_patterns(string_comments, "python", &uri)
+            .expect("translation should succeed");
         assert!(result.contains("\"https://example.com\""));
         assert!(result.contains("# Real comment"));
-        
+
         // Multiple line patterns
         let multi_line = "//Comment1\n//Comment2\n    //Comment3";
-        let result = LanguageTranslator::translate_rust_patterns(multi_line, "python", &uri).expect("translation should succeed");
+        let result = LanguageTranslator::translate_rust_patterns(multi_line, "python", &uri)
+            .expect("translation should succeed");
         assert!(result.contains("# Comment1"));
         assert!(result.contains("# Comment2"));
         assert!(result.contains("    # Comment3"));
@@ -195,38 +220,47 @@ fn {{ function_name }}() {
         let query = filter.build_fts_query();
         assert_eq!(
             query,
-            Some(r#"(tags:markdown AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+            Some(
+                r#"(tags:markdown AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#
+                    .to_string()
+            )
         );
-        
+
         // Test with rust language
         let filter = SnippetFilter::new(Some("rust".to_string()), None, 50);
         let query = filter.build_fts_query();
         assert_eq!(
             query,
-            Some(r#"(tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+            Some(
+                r#"(tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#
+                    .to_string()
+            )
         );
-        
+
         // Test with empty language
         let filter = SnippetFilter::new(Some("".to_string()), None, 50);
         let query = filter.build_fts_query();
         assert_eq!(query, Some(r#"tags:"_snip_""#.to_string()));
-        
+
         // Test with whitespace-only language
         let filter = SnippetFilter::new(Some("   ".to_string()), None, 50);
         let query = filter.build_fts_query();
         assert_eq!(query, Some(r#"tags:"_snip_""#.to_string()));
-        
+
         // Test with None language
         let filter = SnippetFilter::new(None, None, 50);
         let query = filter.build_fts_query();
         assert_eq!(query, Some(r#"tags:"_snip_""#.to_string()));
-        
+
         // Test with complex language names
         let filter = SnippetFilter::new(Some("typescript".to_string()), None, 50);
         let query = filter.build_fts_query();
         assert_eq!(
             query,
-            Some(r#"(tags:typescript AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#.to_string())
+            Some(
+                r#"(tags:typescript AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#
+                    .to_string()
+            )
         );
     }
 
@@ -235,28 +269,38 @@ fn {{ function_name }}() {
         // Test the exact content from the failing snippet
         let uri = Url::parse("file:///test/example.py").expect("valid test URI");
         let multiline_content = "{% raw %}\n// Fold description {{{ //\n\nContent\n// }}} Fold description //\n$0\n{% endraw %}";
-        
+
         println!("Input content: {:?}", multiline_content);
-        println!("Input lines: {:?}", multiline_content.split('\n').collect::<Vec<_>>());
-        
-        let result = LanguageTranslator::translate_rust_patterns(multiline_content, "python", &uri).expect("translation should succeed");
-        
+        println!(
+            "Input lines: {:?}",
+            multiline_content.split('\n').collect::<Vec<_>>()
+        );
+
+        let result = LanguageTranslator::translate_rust_patterns(multiline_content, "python", &uri)
+            .expect("translation should succeed");
+
         println!("Output content: {:?}", result);
         println!("Output lines: {:?}", result.split('\n').collect::<Vec<_>>());
-        
+
         // Check that newlines are preserved
         let input_line_count = multiline_content.matches('\n').count();
         let output_line_count = result.matches('\n').count();
-        
-        println!("Input newlines: {}, Output newlines: {}", input_line_count, output_line_count);
-        
+
+        println!(
+            "Input newlines: {}, Output newlines: {}",
+            input_line_count, output_line_count
+        );
+
         // Should preserve the same number of newlines
-        assert_eq!(input_line_count, output_line_count, "Number of newlines should be preserved");
-        
+        assert_eq!(
+            input_line_count, output_line_count,
+            "Number of newlines should be preserved"
+        );
+
         // Should contain translated comments (preserving the // at the end)
         assert!(result.contains("# Fold description {{{ //"));
         assert!(result.contains("# }}} Fold description //"));
-        
+
         // Should preserve the empty line between first comment and "Content"
         assert!(result.contains("\n\nContent\n"));
     }

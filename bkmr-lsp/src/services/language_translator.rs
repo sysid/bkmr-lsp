@@ -8,12 +8,12 @@ use crate::domain::{LanguageInfo, LanguageRegistry, Snippet};
 
 // Pre-compiled regex patterns for performance
 lazy_static! {
-    static ref LINE_COMMENT_START: Regex = Regex::new(r"^(\s*)//\s*(.*)$")
-        .expect("compile line comment start regex");
-    static ref LINE_COMMENT_END: Regex = Regex::new(r"^(.+?)(\s+)//\s*(.*)$")
-        .expect("compile line comment end regex");
-    static ref RUST_INDENT: Regex = Regex::new(r"^( {4})+")
-        .expect("compile rust indentation regex");
+    static ref LINE_COMMENT_START: Regex =
+        Regex::new(r"^(\s*)//\s*(.*)$").expect("compile line comment start regex");
+    static ref LINE_COMMENT_END: Regex =
+        Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("compile line comment end regex");
+    static ref RUST_INDENT: Regex =
+        Regex::new(r"^( {4})+").expect("compile rust indentation regex");
 }
 
 /// Service for translating Rust syntax patterns to target languages
@@ -30,10 +30,10 @@ impl LanguageTranslator {
 
         debug!("Processing universal snippet: {}", snippet.title);
         debug!("Original content: {:?}", snippet.get_content());
-        
+
         let translated = Self::translate_rust_patterns(snippet.get_content(), language_id, uri)
             .context("translate Rust patterns to target language")?;
-        
+
         debug!("Translated content: {:?}", translated);
         Ok(translated)
     }
@@ -48,8 +48,9 @@ impl LanguageTranslator {
         debug!("Content length: {} bytes", content.len());
 
         // Use line-by-line processing to preserve newlines
-        let mut processed_content = Self::translate_rust_patterns_line_by_line(content, &target_lang)
-            .context("process content line by line")?;
+        let mut processed_content =
+            Self::translate_rust_patterns_line_by_line(content, &target_lang)
+                .context("process content line by line")?;
 
         // Replace Rust block comments (/* */) with target language block comments
         if let Some((target_start, target_end)) = &target_lang.block_comment {
@@ -57,33 +58,38 @@ impl LanguageTranslator {
                 .dot_matches_new_line(true)
                 .build()
                 .context("compile block comment regex")?;
-            
-            processed_content = block_comment_regex.replace_all(&processed_content, |caps: &regex::Captures| {
-                format!("{}{}{}", target_start, &caps[1], target_end)
-            }).to_string();
+
+            processed_content = block_comment_regex
+                .replace_all(&processed_content, |caps: &regex::Captures| {
+                    format!("{}{}{}", target_start, &caps[1], target_end)
+                })
+                .to_string();
         }
 
         // Add file name replacement for simple relative path
         if processed_content.contains("{{ filename }}") {
-            let filename = uri.path().split('/').last().unwrap_or("untitled");
+            let filename = uri.path().split('/').next_back().unwrap_or("untitled");
             processed_content = processed_content.replace("{{ filename }}", filename);
         }
 
         debug!("Rust pattern translation complete");
         debug!("Final content: {:?}", processed_content);
         debug!("Final content length: {} bytes", processed_content.len());
-        
+
         Ok(processed_content)
     }
 
     /// Process content line by line to preserve newlines properly
-    fn translate_rust_patterns_line_by_line(content: &str, target_lang: &LanguageInfo) -> Result<String> {
+    fn translate_rust_patterns_line_by_line(
+        content: &str,
+        target_lang: &LanguageInfo,
+    ) -> Result<String> {
         let lines: Vec<&str> = content.split('\n').collect();
         let mut processed_lines = Vec::new();
-        
+
         for line in lines {
             let mut processed_line = line.to_string();
-            
+
             // Process line comments (//)
             if let Some(target_comment) = &target_lang.line_comment {
                 // Start of line comments
@@ -92,18 +98,26 @@ impl LanguageTranslator {
                 }
                 // End of line comments (after code)
                 else if let Some(captures) = LINE_COMMENT_END.captures(line) {
-                    processed_line = format!("{}{}{} {}", &captures[1], &captures[2], target_comment, &captures[3]);
+                    processed_line = format!(
+                        "{}{}{} {}",
+                        &captures[1], &captures[2], target_comment, &captures[3]
+                    );
                 }
             } else if let Some((block_start, block_end)) = &target_lang.block_comment {
                 // For languages without line comments, use block comments
                 if let Some(captures) = LINE_COMMENT_START.captures(line) {
-                    processed_line = format!("{}{} {} {}", &captures[1], block_start, &captures[2], block_end);
-                }
-                else if let Some(captures) = LINE_COMMENT_END.captures(line) {
-                    processed_line = format!("{}{}{} {} {}", &captures[1], &captures[2], block_start, &captures[3], block_end);
+                    processed_line = format!(
+                        "{}{} {} {}",
+                        &captures[1], block_start, &captures[2], block_end
+                    );
+                } else if let Some(captures) = LINE_COMMENT_END.captures(line) {
+                    processed_line = format!(
+                        "{}{}{} {} {}",
+                        &captures[1], &captures[2], block_start, &captures[3], block_end
+                    );
                 }
             }
-            
+
             // Process indentation
             if target_lang.indent_char != "    " {
                 if let Some(captures) = RUST_INDENT.captures(&processed_line) {
@@ -112,10 +126,10 @@ impl LanguageTranslator {
                     processed_line = processed_line.replacen(&captures[0], &new_indent, 1);
                 }
             }
-            
+
             processed_lines.push(processed_line);
         }
-        
+
         Ok(processed_lines.join("\n"))
     }
 }

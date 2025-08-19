@@ -102,21 +102,11 @@ impl LanguageRegistry {
                 Some(("/*".to_string(), "*/".to_string())),
                 "    ".to_string(),
             ),
-            "shell" | "bash" | "sh" => LanguageInfo::new(
-                Some("#".to_string()),
-                None,
-                "    ".to_string(),
-            ),
-            "yaml" | "yml" => LanguageInfo::new(
-                Some("#".to_string()),
-                None,
-                "  ".to_string(),
-            ),
-            "json" => LanguageInfo::new(
-                None,
-                None,
-                "  ".to_string(),
-            ),
+            "shell" | "bash" | "sh" => {
+                LanguageInfo::new(Some("#".to_string()), None, "    ".to_string())
+            }
+            "yaml" | "yml" => LanguageInfo::new(Some("#".to_string()), None, "  ".to_string()),
+            "json" => LanguageInfo::new(None, None, "  ".to_string()),
             "markdown" | "md" => LanguageInfo::new(
                 None,
                 Some(("<!--".to_string(), "-->".to_string())),
@@ -127,17 +117,9 @@ impl LanguageRegistry {
                 Some(("<!--".to_string(), "-->".to_string())),
                 "  ".to_string(),
             ),
-            "vim" | "viml" => LanguageInfo::new(
-                Some("\"".to_string()),
-                None,
-                "  ".to_string(),
-            ),
+            "vim" | "viml" => LanguageInfo::new(Some("\"".to_string()), None, "  ".to_string()),
             // Default fallback for unknown languages
-            _ => LanguageInfo::new(
-                Some("#".to_string()),
-                None,
-                "    ".to_string(),
-            ),
+            _ => LanguageInfo::new(Some("#".to_string()), None, "    ".to_string()),
         }
     }
 
@@ -147,11 +129,12 @@ impl LanguageRegistry {
             .extension()
             .and_then(|s| s.to_str())
             .unwrap_or("");
-        
+
         let language_id = Self::extension_to_language_id(extension);
-        
+
         match language_id {
-            "rust" | "javascript" | "typescript" | "go" | "java" | "c" | "cpp" | "swift" | "kotlin" | "scss" | "php" => "//",
+            "rust" | "javascript" | "typescript" | "go" | "java" | "c" | "cpp" | "swift"
+            | "kotlin" | "scss" | "php" => "//",
             "python" | "shell" | "yaml" => "#",
             "html" | "markdown" | "xml" => "<!--",
             "css" => "/*",
@@ -164,7 +147,7 @@ impl LanguageRegistry {
     fn extension_to_language_id(extension: &str) -> &str {
         match extension {
             "rs" => "rust",
-            "js" | "mjs" => "javascript", 
+            "js" | "mjs" => "javascript",
             "ts" | "tsx" => "typescript",
             "py" | "pyw" => "python",
             "go" => "go",
@@ -203,7 +186,10 @@ mod tests {
 
         // Assert
         assert_eq!(language_info.line_comment, Some("//".to_string()));
-        assert_eq!(language_info.block_comment, Some(("/*".to_string(), "*/".to_string())));
+        assert_eq!(
+            language_info.block_comment,
+            Some(("/*".to_string(), "*/".to_string()))
+        );
         assert_eq!(language_info.indent_char, "    ");
     }
 
@@ -217,7 +203,10 @@ mod tests {
 
         // Assert
         assert_eq!(language_info.line_comment, Some("#".to_string()));
-        assert_eq!(language_info.block_comment, Some(("\"\"\"".to_string(), "\"\"\"".to_string())));
+        assert_eq!(
+            language_info.block_comment,
+            Some(("\"\"\"".to_string(), "\"\"\"".to_string()))
+        );
         assert_eq!(language_info.indent_char, "    ");
     }
 

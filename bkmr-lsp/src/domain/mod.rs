@@ -1,7 +1,7 @@
-pub mod snippet;
-pub mod language;
 pub mod completion;
+pub mod language;
+pub mod snippet;
 
-pub use snippet::*;
-pub use language::*;
 pub use completion::*;
+pub use language::*;
+pub use snippet::*;

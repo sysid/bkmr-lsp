@@ -42,17 +42,16 @@ impl SnippetRepository for MockSnippetRepository {
 
         // Apply language filter
         if let Some(ref language) = filter.language_id {
-            filtered_snippets.retain(|snippet| {
-                snippet.has_language(language) || snippet.is_universal()
-            });
+            filtered_snippets
+                .retain(|snippet| snippet.has_language(language) || snippet.is_universal());
         }
 
         // Apply prefix filter
         if let Some(ref prefix) = filter.query_prefix {
             let prefix_lower = prefix.to_lowercase();
             filtered_snippets.retain(|snippet| {
-                snippet.title.to_lowercase().contains(&prefix_lower) ||
-                snippet.description.to_lowercase().contains(&prefix_lower)
+                snippet.title.to_lowercase().contains(&prefix_lower)
+                    || snippet.description.to_lowercase().contains(&prefix_lower)
             });
         }
 
@@ -115,8 +114,11 @@ mod tests {
             vec!["universal".to_string(), "_snip_".to_string()],
         );
 
-        let repository = MockSnippetRepository::new()
-            .with_snippets(vec![rust_snippet.clone(), python_snippet, universal_snippet.clone()]);
+        let repository = MockSnippetRepository::new().with_snippets(vec![
+            rust_snippet.clone(),
+            python_snippet,
+            universal_snippet.clone(),
+        ]);
 
         let filter = SnippetFilter::new(Some("rust".to_string()), None, 50);
 
@@ -188,6 +190,11 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Health check failed"));
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("Health check failed")
+        );
     }
 }

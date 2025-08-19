@@ -1,7 +1,7 @@
 // Basic LSP protocol structure testing
 
-use tower_lsp::lsp_types::*;
 use tower_lsp::jsonrpc;
+use tower_lsp::lsp_types::*;
 
 #[test_log::test]
 fn test_lsp_request_format() {
@@ -48,9 +48,7 @@ fn test_completion_item_structure() {
 fn test_server_capabilities_structure() {
     // Test server capabilities structure
     let capabilities = ServerCapabilities {
-        text_document_sync: Some(TextDocumentSyncCapability::Kind(
-            TextDocumentSyncKind::FULL,
-        )),
+        text_document_sync: Some(TextDocumentSyncCapability::Kind(TextDocumentSyncKind::FULL)),
         completion_provider: Some(CompletionOptions {
             resolve_provider: Some(false),
             trigger_characters: None,
