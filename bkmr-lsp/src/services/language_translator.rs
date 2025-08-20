@@ -14,6 +14,18 @@ lazy_static! {
         Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("compile line comment end regex");
     static ref RUST_INDENT: Regex =
         Regex::new(r"^( {4})+").expect("compile rust indentation regex");
+    // Environment variable patterns that should be escaped
+    static ref ENV_VAR_SIMPLE: Regex =
+        Regex::new(r"\$([A-Z_][A-Z0-9_]*)").expect("compile simple env var regex");
+    static ref ENV_VAR_BRACED: Regex =
+        Regex::new(r"\$\{([A-Z_][A-Z0-9_]*)\}").expect("compile braced env var regex");
+    // LSP snippet patterns that should NOT be escaped
+    static ref LSP_TABSTOP: Regex =
+        Regex::new(r"\$(\d+)").expect("compile LSP tabstop regex");
+    static ref LSP_PLACEHOLDER: Regex =
+        Regex::new(r"\$\{(\d+:[^}]*)\}").expect("compile LSP placeholder regex");
+    static ref LSP_CHOICE: Regex =
+        Regex::new(r"\$\{(\d+\|[^}]*\|)\}").expect("compile LSP choice regex");
 }
 
 /// Service for translating Rust syntax patterns to target languages
@@ -23,19 +35,19 @@ impl LanguageTranslator {
     /// Translate Rust syntax patterns in universal snippets to target language
     #[instrument(skip(snippet))]
     pub fn translate_snippet(snippet: &Snippet, language_id: &str, uri: &Url) -> Result<String> {
-        if !snippet.is_universal() {
+        let content = if snippet.is_universal() {
+            debug!("Processing universal snippet: {}", snippet.title);
+            debug!("Original content: {:?}", snippet.get_content());
+
+            Self::translate_rust_patterns(snippet.get_content(), language_id, uri)
+                .context("translate Rust patterns to target language")?
+        } else {
             // Regular snippet - return content as-is
-            return Ok(snippet.get_content().to_string());
-        }
+            snippet.get_content().to_string()
+        };
 
-        debug!("Processing universal snippet: {}", snippet.title);
-        debug!("Original content: {:?}", snippet.get_content());
-
-        let translated = Self::translate_rust_patterns(snippet.get_content(), language_id, uri)
-            .context("translate Rust patterns to target language")?;
-
-        debug!("Translated content: {:?}", translated);
-        Ok(translated)
+        debug!("Final translated content: {:?}", content);
+        Ok(content)
     }
 
     /// Translate Rust syntax patterns in content to target language
@@ -131,6 +143,76 @@ impl LanguageTranslator {
         }
 
         Ok(processed_lines.join("\n"))
+    }
+
+    /// Escape environment variables in content while preserving LSP snippet syntax
+    #[instrument(skip(content))]
+    pub fn escape_environment_variables(content: &str, should_escape: bool) -> String {
+        if !should_escape {
+            return content.to_string();
+        }
+
+        debug!("Escaping environment variables in content");
+        debug!("Input content: {:?}", content);
+
+        // First, collect all LSP snippet positions to avoid escaping them
+        let mut lsp_positions = Vec::new();
+        
+        // Collect LSP tabstop positions ($1, $2, etc.)
+        for mat in LSP_TABSTOP.find_iter(content) {
+            lsp_positions.push((mat.start(), mat.end()));
+        }
+        
+        // Collect LSP placeholder positions (${1:default})
+        for mat in LSP_PLACEHOLDER.find_iter(content) {
+            lsp_positions.push((mat.start(), mat.end()));
+        }
+        
+        // Collect LSP choice positions (${1|choice1,choice2|})
+        for mat in LSP_CHOICE.find_iter(content) {
+            lsp_positions.push((mat.start(), mat.end()));
+        }
+
+        // Sort positions by start index for efficient checking
+        lsp_positions.sort_by_key(|&(start, _)| start);
+
+        let mut result = content.to_string();
+        
+        // Helper function to check if a position overlaps with any LSP snippet
+        let is_lsp_position = |pos: usize| -> bool {
+            lsp_positions.iter().any(|&(start, end)| pos >= start && pos < end)
+        };
+
+        // Escape simple environment variables ($VAR) that don't overlap with LSP snippets
+        result = ENV_VAR_SIMPLE.replace_all(&result, |caps: &regex::Captures| {
+            let full_match = caps.get(0).unwrap();
+            let match_start = full_match.start();
+            
+            if is_lsp_position(match_start) {
+                // This is part of an LSP snippet, don't escape
+                full_match.as_str().to_string()
+            } else {
+                // This is an environment variable, escape it
+                format!("\\${}", &caps[1])
+            }
+        }).to_string();
+
+        // Escape braced environment variables (${VAR}) that don't overlap with LSP snippets
+        result = ENV_VAR_BRACED.replace_all(&result, |caps: &regex::Captures| {
+            let full_match = caps.get(0).unwrap();
+            let match_start = full_match.start();
+            
+            if is_lsp_position(match_start) {
+                // This is part of an LSP snippet, don't escape
+                full_match.as_str().to_string()
+            } else {
+                // This is an environment variable, escape it
+                format!("\\${{{}}}", &caps[1])
+            }
+        }).to_string();
+
+        debug!("Escaped content: {:?}", result);
+        result
     }
 }
 
@@ -254,5 +336,106 @@ block comment
         assert!(result.is_ok());
         let translated = result.expect("valid translation result");
         assert!(translated.contains("// File: example.rs"));
+    }
+
+    #[test]
+    fn given_environment_variables_when_escaping_enabled_then_escapes_env_vars() {
+        // Arrange
+        let content = "echo $HOME and ${USER} variables";
+
+        // Act
+        let result = LanguageTranslator::escape_environment_variables(content, true);
+
+        // Assert
+        assert_eq!(result, "echo \\$HOME and \\${USER} variables");
+    }
+
+    #[test]
+    fn given_environment_variables_when_escaping_disabled_then_keeps_as_is() {
+        // Arrange
+        let content = "echo $HOME and ${USER} variables";
+
+        // Act
+        let result = LanguageTranslator::escape_environment_variables(content, false);
+
+        // Assert
+        assert_eq!(result, "echo $HOME and ${USER} variables");
+    }
+
+    #[test]
+    fn given_lsp_snippet_syntax_when_escaping_then_preserves_lsp_syntax() {
+        // Arrange
+        let content = "function test($1, ${2:default}) { echo $HOME; $3 }";
+
+        // Act
+        let result = LanguageTranslator::escape_environment_variables(content, true);
+
+        // Assert
+        assert_eq!(result, "function test($1, ${2:default}) { echo \\$HOME; $3 }");
+    }
+
+    #[test]
+    fn given_lsp_choice_syntax_when_escaping_then_preserves_choice_syntax() {
+        // Arrange
+        let content = "var type = ${1|string,number,boolean|}; echo $HOME";
+
+        // Act
+        let result = LanguageTranslator::escape_environment_variables(content, true);
+
+        // Assert
+        assert_eq!(result, "var type = ${1|string,number,boolean|}; echo \\$HOME");
+    }
+
+    #[test]
+    fn given_mixed_dollar_signs_when_escaping_then_handles_correctly() {
+        // Arrange
+        let content = "Price: $100, Path: $HOME, Tabstop: $1, Placeholder: ${2:default}";
+
+        // Act
+        let result = LanguageTranslator::escape_environment_variables(content, true);
+
+        // Assert
+        assert_eq!(result, "Price: $100, Path: \\$HOME, Tabstop: $1, Placeholder: ${2:default}");
+    }
+
+    #[test]
+    fn given_complex_snippet_when_escaping_then_handles_all_patterns() {
+        // Arrange
+        let content = r#"#!/bin/bash
+# File: ${1:script.sh}
+export PATH=$HOME/bin:$PATH
+echo "User: $USER"
+cd ${PROJECT_ROOT}
+printf "${2|info,warn,error|}: %s\n" "$3""#;
+
+        // Act
+        let result = LanguageTranslator::escape_environment_variables(content, true);
+
+        // Assert
+        let expected = r#"#!/bin/bash
+# File: ${1:script.sh}
+export PATH=\$HOME/bin:\$PATH
+echo "User: \$USER"
+cd \${PROJECT_ROOT}
+printf "${2|info,warn,error|}: %s\n" "$3""#;
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn given_edge_cases_when_escaping_then_handles_correctly() {
+        // Arrange - test empty string and strings with no variables
+        let empty = "";
+        let no_vars = "just plain text with no variables";
+        let just_dollar = "$";
+
+        // Act
+        let result_empty = LanguageTranslator::escape_environment_variables(empty, true);
+        let result_no_vars = LanguageTranslator::escape_environment_variables(no_vars, true);
+        let result_dollar = LanguageTranslator::escape_environment_variables(just_dollar, true);
+
+        // Assert
+        assert_eq!(result_empty, "");
+        assert_eq!(result_no_vars, "just plain text with no variables");
+        assert_eq!(result_dollar, "$"); // Just a dollar sign should not be escaped
     }
 }

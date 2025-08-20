@@ -11,6 +11,7 @@ bkmr-lsp provides manual snippet completion for bkmr snippets in any LSP-compati
 - **Language-aware filtering**: Snippets are filtered by file type (e.g., Rust files get only Rust snippets)
 - **Universal snippets**: Language-agnostic snippets with natural Rust syntax that automatically adapt to target languages
 - **Automatic interpolation**: Templates are processed using bkmr's `--interpolate` flag
+- **Environment variable escaping**: Smart handling of shell variables in snippets to prevent confusion with LSP client placeholder
 - **LSP commands**: Filepath comment insertion with automatic language detection
 
 ## Requirements
@@ -52,6 +53,61 @@ bkmr --version  # Must be >= 4.24.0
 bkmr add "console.log('Hello World');" javascript,test --type snip --title "JS Hello"
 ```
 
+## CLI Options
+
+bkmr-lsp supports several command-line options to customize behavior:
+
+### Environment Variable Escaping
+
+**Default behavior**: bkmr-lsp escapes environment variables in snippets to prevent LSP clients from misinterpreting them as snippet placeholders.
+
+```bash
+# Disable environment variable escaping
+bkmr-lsp --no-escape-vars
+
+# Show help and available options
+bkmr-lsp --help
+
+# Show version information
+bkmr-lsp --version
+```
+
+### Why Environment Variable Escaping?
+
+bkmr snippets are designed to work in **both terminal and LSP environments**, unlike traditional editor-specific snippets. This dual-purpose design means:
+
+- **Terminal use**: Snippets contain real shell variables like `$HOME`, `$USER`, `${PROJECT_ROOT}`
+- **LSP clients**: Interpret `$` syntax as snippet placeholders (`$1`, `${2:default}`, `${1|choice1,choice2|}`)
+- **Conflict**: Environment variables get treated as malformed placeholders, causing `$HOME` to become `HOME`
+
+**Smart escaping solution:**
+- **Environment variables** → Escaped: `$HOME` becomes `\$HOME`, `${USER}` becomes `\${USER}`
+- **LSP placeholders** → Preserved: `$1`, `${2:default}`, `${1|a,b,c|}` remain unchanged
+- **Result**: Same snippets work perfectly in both CLI and editor contexts
+
+**Note**: This is usually the correct behavior for LSP clients. The escaping ensures that `$HOME` appears as literal text rather than being interpreted as a malformed snippet placeholder.
+
+**Example transformation:**
+```bash
+# Original snippet content:
+export PATH=$HOME/bin:$PATH
+cd ${PROJECT_ROOT}
+echo "User: $USER, step: $1"
+printf "${2|info,warn,error|}: %s\n" "$3"
+
+# With escaping (default) for correct handling in LSP client:
+export PATH=\$HOME/bin:\$PATH
+cd \${PROJECT_ROOT}
+echo "User: \$USER, step: $1"
+printf "${2|info,warn,error|}: %s\n" "$3"
+```
+
+### When to Disable Escaping
+
+Use `--no-escape-vars` when:
+- You prefer to handle escaping manually in your snippets
+- Your workflow doesn't require terminal compatibility
+
 ## Configuration
 
 ### VS Code
@@ -63,6 +119,20 @@ Install an LSP extension and add to `settings.json`:
   "languageServerExample.servers": {
     "bkmr-lsp": {
       "command": "bkmr-lsp",
+      "args": [],
+      "filetypes": ["rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim"]
+    }
+  }
+}
+```
+
+**To disable environment variable escaping:**
+```json
+{
+  "languageServerExample.servers": {
+    "bkmr-lsp": {
+      "command": "bkmr-lsp",
+      "args": ["--no-escape-vars"],
       "filetypes": ["rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim"]
     }
   }
@@ -84,12 +154,34 @@ if executable('bkmr-lsp')
 endif
 ```
 
+**To disable environment variable escaping:**
+```vim
+if executable('bkmr-lsp')
+  augroup LspBkmr
+    autocmd!
+    autocmd User lsp_setup call lsp#register_server({
+      \ 'name': 'bkmr-lsp',
+      \ 'cmd': {server_info->['bkmr-lsp', '--no-escape-vars']},
+      \ 'allowlist': ['rust', 'javascript', 'typescript', 'python', 'go', 'java', 'c', 'cpp', 'html', 'css', 'scss', 'ruby', 'php', 'swift', 'kotlin', 'shell', 'yaml', 'json', 'markdown', 'xml', 'vim'],
+      \ })
+  augroup END
+endif
+```
+
 ### Neovim with nvim-lspconfig
 
 Basic setup:
 ```lua
 require'lspconfig'.bkmr_lsp.setup{
   cmd = { "bkmr-lsp" },
+  filetypes = { "rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim" },
+}
+```
+
+**To disable environment variable escaping:**
+```lua
+require'lspconfig'.bkmr_lsp.setup{
+  cmd = { "bkmr-lsp", "--no-escape-vars" },
   filetypes = { "rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim" },
 }
 ```
@@ -284,6 +376,18 @@ Most LSP clients can execute this command programmatically. For IntelliJ Platfor
 1. Verify bkmr works: `bkmr search --json --interpolate 'tags:"_snip_"'`
 2. Check bkmr version: `bkmr --version`
 3. Test LSP server: `echo '{"jsonrpc":"2.0","method":"initialize","id":1,"params":{}}' | bkmr-lsp`
+
+### LSP Placeholders Not Working
+
+If LSP snippet navigation (`$1`, `${2:default}`) doesn't work:
+
+**Problem**: Escaping might be interfering (rare)
+**Solution**: Check your snippet content and verify LSP placeholders use correct syntax:
+- Simple tabstops: `$1`, `$2`, `$3`
+- Placeholders: `${1:default text}`, `${2:another default}`
+- Choices: `${1|option1,option2,option3|}`
+
+Environment variable escaping preserves these patterns, so this usually indicates a client configuration issue.
 
 ### Raw Templates in Completions
 
@@ -481,6 +585,7 @@ bkmr CLI Call → Universal Translation → LSP Response
   - Language-aware snippet filtering using `textDocument/didOpen` language ID
   - Universal snippets with natural Rust syntax translation
   - Template interpolation via bkmr `--interpolate` flag
+  - Environment variable escaping for LSP/terminal compatibility (configurable)
   - FTS-based queries for optimal snippet retrieval
   - Live snippet fetching with bkmr CLI integration
   - LSP commands for filepath comment insertion with language detection

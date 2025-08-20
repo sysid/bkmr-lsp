@@ -6,6 +6,10 @@ use std::path::Path;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::domain::CompletionContext;
+use crate::repositories::{BkmrRepository, RepositoryConfig};
+use crate::services::CompletionService;
+
 /// Language-specific information for Rust pattern translation
 #[derive(Debug, Clone)]
 pub struct LanguageInfo {
@@ -19,6 +23,7 @@ pub struct LanguageInfo {
 pub struct BkmrConfig {
     pub bkmr_binary: String,
     pub max_completions: usize,
+    pub escape_variables: bool,
 }
 
 impl Default for BkmrConfig {
@@ -26,6 +31,7 @@ impl Default for BkmrConfig {
         Self {
             bkmr_binary: "bkmr".to_string(),
             max_completions: 50,
+            escape_variables: true,
         }
     }
 }
@@ -46,6 +52,7 @@ pub struct BkmrSnippet {
 pub struct BkmrLspBackend {
     client: Client,
     config: BkmrConfig,
+    completion_service: CompletionService,
     /// Cache of document contents to extract prefixes
     document_cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, String>>>,
     /// Cache of document language IDs for filetype-based filtering
@@ -54,10 +61,27 @@ pub struct BkmrLspBackend {
 
 impl BkmrLspBackend {
     pub fn new(client: Client) -> Self {
-        debug!("Creating BkmrLspBackend");
+        Self::with_config(client, BkmrConfig::default())
+    }
+
+    pub fn with_config(client: Client, config: BkmrConfig) -> Self {
+        debug!("Creating BkmrLspBackend with config: {:?}", config);
+        
+        // Create repository with configuration from BkmrConfig
+        let repo_config = RepositoryConfig {
+            binary_path: config.bkmr_binary.clone(),
+            max_results: config.max_completions,
+            timeout_seconds: 10,
+        };
+        let repository = std::sync::Arc::new(BkmrRepository::new(repo_config));
+        
+        // Create completion service with repository and configuration
+        let completion_service = CompletionService::with_config(repository, config.clone());
+        
         Self {
             client,
-            config: BkmrConfig::default(),
+            config,
+            completion_service,
             document_cache: std::sync::Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -133,279 +157,11 @@ impl BkmrLspBackend {
         cache.get(&uri.to_string()).cloned()
     }
 
-    /// Build FTS query for snippets that includes both language-specific and universal snippets
-    fn build_snippet_fts_query(&self, language_id: Option<&str>) -> Option<String> {
-        Self::build_snippet_fts_query_static(language_id)
-    }
 
-    /// Static version of FTS query builder
-    fn build_snippet_fts_query_static(language_id: Option<&str>) -> Option<String> {
-        if let Some(lang) = language_id {
-            if !lang.trim().is_empty() {
-                // Query for either (language AND _snip_) OR (universal AND _snip_)
-                return Some(format!(
-                    r#"(tags:{} AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")"#,
-                    lang
-                ));
-            }
-        }
-        // Fallback: just get all snippets with _snip_ tag
-        Some(r#"tags:"_snip_""#.to_string())
-    }
 
-    /// Process content line by line to preserve newlines properly
-    fn translate_rust_patterns_line_by_line(content: &str, target_lang: &LanguageInfo) -> String {
-        let lines: Vec<&str> = content.split('\n').collect();
-        let mut processed_lines = Vec::new();
 
-        // Compile regexes once outside the loop
-        let line_start_comment_re =
-            regex::Regex::new(r"^(\s*)//\s*(.*)$").expect("valid line comment regex");
-        let line_end_comment_re =
-            regex::Regex::new(r"^(.+?)(\s+)//\s*(.*)$").expect("valid end comment regex");
-        let indent_re = regex::Regex::new(r"^( {4})+").expect("valid indent regex");
 
-        for line in lines {
-            let mut processed_line = line.to_string();
 
-            // Process line comments (//)
-            if let Some(target_comment) = &target_lang.line_comment {
-                // Start of line comments
-                if let Some(captures) = line_start_comment_re.captures(line) {
-                    processed_line = format!("{}{} {}", &captures[1], target_comment, &captures[2]);
-                }
-                // End of line comments (after code)
-                else if let Some(captures) = line_end_comment_re.captures(line) {
-                    processed_line = format!(
-                        "{}{}{} {}",
-                        &captures[1], &captures[2], target_comment, &captures[3]
-                    );
-                }
-            } else if let Some((block_start, block_end)) = &target_lang.block_comment {
-                // For languages without line comments, use block comments
-                if let Some(captures) = line_start_comment_re.captures(line) {
-                    processed_line = format!(
-                        "{}{} {} {}",
-                        &captures[1], block_start, &captures[2], block_end
-                    );
-                } else if let Some(captures) = line_end_comment_re.captures(line) {
-                    processed_line = format!(
-                        "{}{}{} {} {}",
-                        &captures[1], &captures[2], block_start, &captures[3], block_end
-                    );
-                }
-            }
-
-            // Process indentation
-            if target_lang.indent_char != "    " {
-                if let Some(captures) = indent_re.captures(&processed_line) {
-                    let rust_indent_count = captures[0].len() / 4;
-                    let new_indent = target_lang.indent_char.repeat(rust_indent_count);
-                    processed_line = processed_line.replacen(&captures[0], &new_indent, 1);
-                }
-            }
-
-            processed_lines.push(processed_line);
-        }
-
-        processed_lines.join("\n")
-    }
-
-    /// Public static version for testing
-    #[cfg(test)]
-    pub fn build_snippet_fts_query_for_test(language_id: Option<&str>) -> Option<String> {
-        Self::build_snippet_fts_query_static(language_id)
-    }
-
-    /// Execute bkmr command and return parsed snippets
-    #[instrument(skip(self))]
-    async fn fetch_snippets(
-        &self,
-        prefix: Option<&str>,
-        language_id: Option<&str>,
-    ) -> Result<Vec<BkmrSnippet>> {
-        let mut args = vec![
-            "search".to_string(),
-            "--json".to_string(),
-            "--interpolate".to_string(), // Always use interpolation
-            "--limit".to_string(),
-            self.config.max_completions.to_string(),
-        ];
-
-        // Build FTS query that combines language-specific and universal snippets
-        let mut fts_parts = Vec::new();
-
-        // Add language + universal snippet query
-        if let Some(snippet_query) = self.build_snippet_fts_query(language_id) {
-            fts_parts.push(format!("({})", snippet_query));
-            debug!("Using snippet query: {}", snippet_query);
-        }
-
-        // Add search term if prefix is provided and not empty
-        if let Some(p) = prefix {
-            if !p.trim().is_empty() {
-                // Use title prefix search for better snippet matching
-                fts_parts.push(format!("metadata:{}*", p));
-                debug!("Using search prefix: {}", p);
-            }
-        }
-
-        // Combine all FTS parts with AND logic
-        if !fts_parts.is_empty() {
-            let fts_query = if fts_parts.len() == 1 {
-                fts_parts.into_iter().next().expect("at least one FTS part")
-            } else {
-                fts_parts.join(" AND ")
-            };
-            args.push(fts_query);
-            debug!(
-                "Final FTS query: {}",
-                args.last().expect("FTS query in args")
-            );
-        }
-
-        debug!("Executing bkmr with args: {:?}", args);
-
-        // Add timeout to prevent hanging
-        let command_future = tokio::process::Command::new(&self.config.bkmr_binary)
-            .args(&args)
-            .output();
-
-        let output =
-            match tokio::time::timeout(std::time::Duration::from_secs(10), command_future).await {
-                Ok(Ok(output)) => output,
-                Ok(Err(e)) => {
-                    error!("Failed to execute bkmr: {}", e);
-                    return Err(anyhow!("Failed to execute bkmr: {}", e));
-                }
-                Err(_) => {
-                    error!("bkmr command timed out after 10 seconds");
-                    return Err(anyhow!("bkmr command timed out"));
-                }
-            };
-
-        if !output.status.success() {
-            let stderr = String::from_utf8_lossy(&output.stderr);
-            error!("bkmr command failed with stderr: {}", stderr);
-            return Err(anyhow!("bkmr command failed: {}", stderr));
-        }
-
-        let stdout_str = String::from_utf8_lossy(&output.stdout);
-
-        if stdout_str.trim().is_empty() {
-            debug!("Empty output from bkmr");
-            return Ok(Vec::new());
-        }
-
-        let snippets: Vec<BkmrSnippet> = serde_json::from_str(&stdout_str).map_err(|e| {
-            error!("Failed to parse bkmr JSON output: {}", e);
-            error!("Raw output was: {}", stdout_str);
-            anyhow!("Failed to parse bkmr JSON output: {}", e)
-        })?;
-
-        info!(
-            "Successfully fetched {} interpolated snippets",
-            snippets.len()
-        );
-        Ok(snippets)
-    }
-
-    /// Translate Rust syntax patterns in universal snippets to target language
-    pub fn translate_rust_patterns(&self, content: &str, language_id: &str, uri: &Url) -> String {
-        let target_lang = self.get_language_info(language_id);
-
-        debug!("Translating Rust patterns for language: {}", language_id);
-        debug!("Input content: {:?}", content);
-        debug!("Content length: {} bytes", content.len());
-
-        // Use line-by-line processing to preserve newlines
-        let mut processed_content =
-            Self::translate_rust_patterns_line_by_line(content, &target_lang);
-
-        // Replace Rust block comments (/* */) with target language block comments
-        if let Some((target_start, target_end)) = &target_lang.block_comment {
-            let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
-                .dot_matches_new_line(true)
-                .build()
-                .expect("compile block comment regex");
-            processed_content = block_comment_regex
-                .replace_all(&processed_content, |caps: &regex::Captures| {
-                    format!("{}{}{}", target_start, &caps[1], target_end)
-                })
-                .to_string();
-        }
-
-        // Add file name replacement for simple relative path
-        if processed_content.contains("{{ filename }}") {
-            let filename = uri.path().split('/').next_back().unwrap_or("untitled");
-            processed_content = processed_content.replace("{{ filename }}", filename);
-        }
-
-        debug!("Rust pattern translation complete");
-        debug!("Final content: {:?}", processed_content);
-        debug!("Final content length: {} bytes", processed_content.len());
-        processed_content
-    }
-
-    /// Convert bkmr snippet to LSP completion item with proper text replacement
-    fn snippet_to_completion_item_with_trigger(
-        &self,
-        snippet: &BkmrSnippet,
-        query: &str,
-        replacement_range: Option<Range>,
-        language_id: &str,
-        uri: &Url,
-    ) -> CompletionItem {
-        // Check if this is a universal snippet and process accordingly
-        let snippet_content = if snippet.tags.contains(&"universal".to_string()) {
-            debug!("Processing universal snippet: {}", snippet.title);
-            debug!("Original content: {:?}", snippet.url);
-            let translated = self.translate_rust_patterns(&snippet.url, language_id, uri);
-            debug!("Translated content: {:?}", translated);
-            translated
-        } else {
-            // Regular snippet - use content as-is
-            snippet.url.clone()
-        };
-        let label = snippet.title.clone();
-
-        debug!(
-            "Creating completion item: query='{}', label='{}', content_preview='{}'",
-            query,
-            label,
-            snippet_content.chars().take(20).collect::<String>()
-        );
-
-        let mut completion_item = CompletionItem {
-            label: label.clone(),
-            kind: Some(CompletionItemKind::SNIPPET), // TODO: Snippet, TEXT
-            detail: Some("bkmr snippet".to_string()),
-            documentation: Some(Documentation::String(if snippet_content.len() > 500 {
-                format!("{}...", &snippet_content[..500])
-            } else {
-                snippet_content.clone()
-            })),
-            insert_text_format: Some(InsertTextFormat::SNIPPET), // TODO: Snippet, PLAIN_TEXT
-            filter_text: Some(label.clone()),
-            sort_text: Some(label.clone()),
-            ..Default::default()
-        };
-
-        // Use TextEdit for proper replacement if we have a range
-        if let Some(range) = replacement_range {
-            completion_item.text_edit = Some(CompletionTextEdit::Edit(TextEdit {
-                range,
-                new_text: snippet_content,
-            }));
-            debug!("Set text_edit for range replacement: {:?}", range);
-        } else {
-            // Fallback to insert_text for backward compatibility
-            completion_item.insert_text = Some(snippet_content);
-            debug!("Using fallback insert_text (no range available)");
-        }
-
-        completion_item
-    }
 
     /// Check if bkmr binary is available
     #[instrument(skip(self))]
@@ -552,73 +308,7 @@ impl BkmrLspBackend {
         }
     }
 
-    /// Test-only method to create language info without backend instance
-    #[cfg(test)]
-    pub fn get_language_info_static(language_id: &str) -> LanguageInfo {
-        match language_id.to_lowercase().as_str() {
-            "rust" => LanguageInfo {
-                line_comment: Some("//".to_string()),
-                block_comment: Some(("/*".to_string(), "*/".to_string())),
-                indent_char: "    ".to_string(),
-            },
-            "python" => LanguageInfo {
-                line_comment: Some("#".to_string()),
-                block_comment: Some(("\"\"\"".to_string(), "\"\"\"".to_string())),
-                indent_char: "    ".to_string(),
-            },
-            "javascript" => LanguageInfo {
-                line_comment: Some("//".to_string()),
-                block_comment: Some(("/*".to_string(), "*/".to_string())),
-                indent_char: "  ".to_string(),
-            },
-            "go" => LanguageInfo {
-                line_comment: Some("//".to_string()),
-                block_comment: Some(("/*".to_string(), "*/".to_string())),
-                indent_char: "\t".to_string(),
-            },
-            "html" => LanguageInfo {
-                line_comment: None,
-                block_comment: Some(("<!--".to_string(), "-->".to_string())),
-                indent_char: "  ".to_string(),
-            },
-            _ => LanguageInfo {
-                line_comment: Some("#".to_string()),
-                block_comment: None,
-                indent_char: "    ".to_string(),
-            },
-        }
-    }
 
-    /// Test-only method to translate Rust patterns without backend instance
-    #[cfg(test)]
-    pub fn translate_rust_patterns_static(content: &str, language_id: &str, uri: &Url) -> String {
-        let target_lang = Self::get_language_info_static(language_id);
-
-        // Use line-by-line processing to preserve newlines
-        let mut processed_content =
-            Self::translate_rust_patterns_line_by_line(content, &target_lang);
-
-        // Handle block comments (these can span multiple lines)
-        if let Some((target_start, target_end)) = &target_lang.block_comment {
-            let block_comment_regex = regex::RegexBuilder::new(r"/\*(.*?)\*/")
-                .dot_matches_new_line(true)
-                .build()
-                .expect("compile block comment regex");
-            processed_content = block_comment_regex
-                .replace_all(&processed_content, |caps: &regex::Captures| {
-                    format!("{}{}{}", target_start, &caps[1], target_end)
-                })
-                .to_string();
-        }
-
-        // Replace filename
-        if processed_content.contains("{{ filename }}") {
-            let filename = uri.path().split('/').next_back().unwrap_or("untitled");
-            processed_content = processed_content.replace("{{ filename }}", filename);
-        }
-
-        processed_content
-    }
 
     /// Legacy method for backward compatibility - uses new language info system
     fn get_comment_syntax(&self, file_path: &str) -> &'static str {
@@ -921,44 +611,28 @@ impl LanguageServer for BkmrLspBackend {
         let language_id = self.get_language_id(uri);
         debug!("Document language ID: {:?}", language_id);
 
-        // Extract query and range information
-        let (query_str, replacement_range) = if let Some((query, range)) = query_info {
+        // Create completion context for the service
+        let mut context = CompletionContext::new(
+            uri.clone(),
+            position,
+            language_id
+        );
+        
+        // Add query information if extracted
+        if let Some((query, range)) = query_info {
             debug!("Query: '{}', Range: {:?}", query, range);
-            (query, Some(range))
+            context = context.with_query(crate::domain::CompletionQuery::new(query, range));
         } else {
             debug!("No query extracted, using empty query");
-            (String::new(), None)
-        };
+        }
 
-        match self
-            .fetch_snippets(
-                if query_str.is_empty() {
-                    None
-                } else {
-                    Some(&query_str)
-                },
-                language_id.as_deref(),
-            )
-            .await
-        {
-            Ok(snippets) => {
-                let completion_items: Vec<CompletionItem> = snippets
-                    .iter()
-                    .map(|snippet| {
-                        self.snippet_to_completion_item_with_trigger(
-                            snippet,
-                            &query_str,
-                            replacement_range,
-                            language_id.as_deref().unwrap_or("unknown"),
-                            uri,
-                        )
-                    })
-                    .collect();
-
+        // Use CompletionService to get completion items
+        match self.completion_service.get_completions(&context).await {
+            Ok(completion_items) => {
                 info!(
                     "Returning {} completion items for query: {:?}",
                     completion_items.len(),
-                    query_str
+                    context.get_query_text().unwrap_or("")
                 );
 
                 // Only log first few items to reduce noise in LSP logs
@@ -978,11 +652,11 @@ impl LanguageServer for BkmrLspBackend {
                 })))
             }
             Err(e) => {
-                error!("Failed to fetch snippets: {}", e);
+                error!("Failed to get completions: {}", e);
                 self.client
                     .log_message(
                         MessageType::ERROR,
-                        &format!("Failed to fetch snippets: {}", e),
+                        &format!("Failed to get completions: {}", e),
                     )
                     .await;
                 Ok(Some(CompletionResponse::Array(vec![])))
