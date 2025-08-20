@@ -6,6 +6,8 @@ use std::path::Path;
 use tower_lsp::{Client, LanguageServer, jsonrpc::Result as LspResult, lsp_types::*};
 use tracing::{debug, error, info, instrument, warn};
 
+use crate::services::LanguageTranslator;
+
 /// Language-specific information for Rust pattern translation
 #[derive(Debug, Clone)]
 pub struct LanguageInfo {
@@ -19,6 +21,7 @@ pub struct LanguageInfo {
 pub struct BkmrConfig {
     pub bkmr_binary: String,
     pub max_completions: usize,
+    pub escape_variables: bool,
 }
 
 impl Default for BkmrConfig {
@@ -26,6 +29,7 @@ impl Default for BkmrConfig {
         Self {
             bkmr_binary: "bkmr".to_string(),
             max_completions: 50,
+            escape_variables: true,
         }
     }
 }
@@ -54,10 +58,14 @@ pub struct BkmrLspBackend {
 
 impl BkmrLspBackend {
     pub fn new(client: Client) -> Self {
-        debug!("Creating BkmrLspBackend");
+        Self::with_config(client, BkmrConfig::default())
+    }
+
+    pub fn with_config(client: Client, config: BkmrConfig) -> Self {
+        debug!("Creating BkmrLspBackend with config: {:?}", config);
         Self {
             client,
-            config: BkmrConfig::default(),
+            config,
             document_cache: std::sync::Arc::new(std::sync::RwLock::new(
                 std::collections::HashMap::new(),
             )),
@@ -357,7 +365,7 @@ impl BkmrLspBackend {
         uri: &Url,
     ) -> CompletionItem {
         // Check if this is a universal snippet and process accordingly
-        let snippet_content = if snippet.tags.contains(&"universal".to_string()) {
+        let translated_content = if snippet.tags.contains(&"universal".to_string()) {
             debug!("Processing universal snippet: {}", snippet.title);
             debug!("Original content: {:?}", snippet.url);
             let translated = self.translate_rust_patterns(&snippet.url, language_id, uri);
@@ -367,6 +375,12 @@ impl BkmrLspBackend {
             // Regular snippet - use content as-is
             snippet.url.clone()
         };
+
+        // Apply environment variable escaping if enabled
+        let snippet_content = LanguageTranslator::escape_environment_variables(
+            &translated_content,
+            self.config.escape_variables,
+        );
         let label = snippet.title.clone();
 
         debug!(

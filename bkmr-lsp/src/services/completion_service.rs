@@ -6,6 +6,7 @@ use tower_lsp::lsp_types::{
 };
 use tracing::{debug, instrument};
 
+use crate::backend::BkmrConfig;
 use crate::domain::{CompletionContext, Snippet, SnippetFilter};
 use crate::repositories::SnippetRepository;
 use crate::services::LanguageTranslator;
@@ -13,19 +14,25 @@ use crate::services::LanguageTranslator;
 /// Service for handling completion logic
 pub struct CompletionService {
     repository: Arc<dyn SnippetRepository>,
+    config: BkmrConfig,
 }
 
 impl std::fmt::Debug for CompletionService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("CompletionService")
             .field("repository", &"<SnippetRepository>")
+            .field("config", &self.config)
             .finish()
     }
 }
 
 impl CompletionService {
     pub fn new(repository: Arc<dyn SnippetRepository>) -> Self {
-        Self { repository }
+        Self::with_config(repository, BkmrConfig::default())
+    }
+
+    pub fn with_config(repository: Arc<dyn SnippetRepository>, config: BkmrConfig) -> Self {
+        Self { repository, config }
     }
 
     /// Generate completion items from context
@@ -80,8 +87,14 @@ impl CompletionService {
         uri: &tower_lsp::lsp_types::Url,
     ) -> Result<CompletionItem> {
         // Translate content if this is a universal snippet
-        let snippet_content = LanguageTranslator::translate_snippet(snippet, language_id, uri)
+        let translated_content = LanguageTranslator::translate_snippet(snippet, language_id, uri)
             .context("translate snippet content for target language")?;
+
+        // Apply environment variable escaping if enabled
+        let snippet_content = LanguageTranslator::escape_environment_variables(
+            &translated_content,
+            self.config.escape_variables,
+        );
 
         let label = snippet.title.clone();
 

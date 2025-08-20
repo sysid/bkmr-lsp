@@ -1,10 +1,23 @@
-use bkmr_lsp::backend::BkmrLspBackend;
+use bkmr_lsp::backend::{BkmrLspBackend, BkmrConfig};
+use clap::Parser;
 use std::panic;
 use tower_lsp::{LspService, Server};
 use tracing_subscriber::EnvFilter;
 
+#[derive(Parser)]
+#[command(name = "bkmr-lsp")]
+#[command(about = "Language Server Protocol implementation for bkmr snippet manager")]
+#[command(version = env!("CARGO_PKG_VERSION"))]
+struct Args {
+    /// Disable environment variable escaping in LSP snippets
+    #[arg(long, help = "Disable escaping of environment variables ($VAR) in snippet content")]
+    no_escape_vars: bool,
+}
+
 #[tokio::main]
 async fn main() {
+    // Parse command line arguments
+    let args = Args::parse();
     // Set up panic hook to log panics instead of just exiting
     panic::set_hook(Box::new(|panic_info| {
         eprintln!("PANIC in bkmr-lsp: {}", panic_info);
@@ -39,6 +52,14 @@ async fn main() {
 
     tracing::info!("Starting bkmr-lsp server v{}", env!("CARGO_PKG_VERSION"));
 
+    // Create configuration from CLI args
+    let config = BkmrConfig {
+        escape_variables: !args.no_escape_vars,
+        ..Default::default()
+    };
+
+    tracing::info!("Configuration: {:?}", config);
+
     // Validate environment before starting
     if let Err(e) = validate_environment().await {
         tracing::error!("Environment validation failed: {}", e);
@@ -47,9 +68,9 @@ async fn main() {
     }
 
     // Set up the LSP service with error handling
-    let (service, socket) = LspService::new(|client| {
+    let (service, socket) = LspService::new(move |client| {
         tracing::debug!("Creating new LSP backend instance");
-        BkmrLspBackend::new(client)
+        BkmrLspBackend::with_config(client, config.clone())
     });
 
     tracing::info!("LSP service created, starting server on stdin/stdout");

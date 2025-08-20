@@ -13,6 +13,7 @@ async fn test_config_edge_cases() {
     let config = BkmrConfig {
         bkmr_binary: "".to_string(),
         max_completions: 0,
+        escape_variables: true,
     };
 
     assert_eq!(config.bkmr_binary, "");
