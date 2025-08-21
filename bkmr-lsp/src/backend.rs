@@ -23,7 +23,6 @@ pub struct LanguageInfo {
 pub struct BkmrConfig {
     pub bkmr_binary: String,
     pub max_completions: usize,
-    pub escape_variables: bool,
     pub enable_interpolation: bool,
 }
 
@@ -32,7 +31,6 @@ impl Default for BkmrConfig {
         Self {
             bkmr_binary: "bkmr".to_string(),
             max_completions: 50,
-            escape_variables: true,
             enable_interpolation: true,
         }
     }

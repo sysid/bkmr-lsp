@@ -46,6 +46,11 @@ impl Snippet {
         self.tags.contains(&language.to_string())
     }
 
+    /// Check if this snippet is marked as plain text (no snippet formatting)
+    pub fn is_plain(&self) -> bool {
+        self.tags.contains(&"plain".to_string())
+    }
+
     /// Get the snippet content (content field contains actual snippet data)
     pub fn get_content(&self) -> &str {
         &self.content
@@ -177,5 +182,41 @@ mod tests {
         assert_eq!(bkmr_snippet.description, "test desc");
         assert_eq!(bkmr_snippet.tags, vec!["rust", "_snip_"]);
         assert_eq!(bkmr_snippet.access_count, 0); // default for new snippet
+    }
+
+    #[test]
+    fn given_plain_tag_when_checking_is_plain_then_returns_true() {
+        // Arrange
+        let snippet = Snippet::new(
+            1,
+            "Plain Text".to_string(),
+            "simple text content".to_string(),
+            "Plain text snippet".to_string(),
+            vec!["plain".to_string(), "_snip_".to_string()],
+        );
+
+        // Act
+        let is_plain = snippet.is_plain();
+
+        // Assert
+        assert!(is_plain);
+    }
+
+    #[test]
+    fn given_no_plain_tag_when_checking_is_plain_then_returns_false() {
+        // Arrange
+        let snippet = Snippet::new(
+            1,
+            "Regular Snippet".to_string(),
+            "snippet with ${1:placeholder}".to_string(),
+            "Regular snippet".to_string(),
+            vec!["rust".to_string(), "_snip_".to_string()],
+        );
+
+        // Act
+        let is_plain = snippet.is_plain();
+
+        // Assert
+        assert!(!is_plain);
     }
 }
