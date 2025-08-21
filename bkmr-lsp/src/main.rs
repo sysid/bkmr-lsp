@@ -12,6 +12,10 @@ struct Args {
     /// Disable environment variable escaping in LSP snippets
     #[arg(long, help = "Disable escaping of environment variables ($VAR) in snippet content")]
     no_escape_vars: bool,
+
+    /// Disable bkmr template interpolation
+    #[arg(long, help = "Disable bkmr template interpolation (serve raw templates instead of processed content)")]
+    no_interpolation: bool,
 }
 
 #[tokio::main]
@@ -55,6 +59,7 @@ async fn main() {
     // Create configuration from CLI args
     let config = BkmrConfig {
         escape_variables: !args.no_escape_vars,
+        enable_interpolation: !args.no_interpolation,
         ..Default::default()
     };
 

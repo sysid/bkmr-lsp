@@ -19,6 +19,7 @@ pub struct RepositoryConfig {
     pub binary_path: String,
     pub max_results: usize,
     pub timeout_seconds: u64,
+    pub enable_interpolation: bool,
 }
 
 impl Default for RepositoryConfig {
@@ -27,6 +28,7 @@ impl Default for RepositoryConfig {
             binary_path: "bkmr".to_string(),
             max_results: 50,
             timeout_seconds: 10,
+            enable_interpolation: true,
         }
     }
 }
