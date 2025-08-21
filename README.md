@@ -4,15 +4,15 @@ Language Server Protocol (LSP) implementation for [bkmr](https://github.com/sysi
 
 ## Overview
 
-bkmr-lsp provides manual snippet completion for bkmr snippets in any LSP-compatible editor. Use Ctrl+Space (or your editor's completion trigger) to access snippets based on the current word context. Snippets are automatically interpolated, delivering processed content rather than raw templates.
+bkmr-lsp provides snippet completion for bkmr snippets in any LSP-compatible editor. Snippets are automatically
+interpolated, delivering processed content rather than raw templates. Additionally it respects snippet tabstops, etc.
 
 **Key Features:**
-- **Manual completion**: Triggered via Ctrl+Space with word-based filtering for improved performance
 - **Language-aware filtering**: Snippets are filtered by file type (e.g., Rust files get only Rust snippets)
 - **Universal snippets**: Language-agnostic snippets with natural Rust syntax that automatically adapt to target languages
 - **Automatic interpolation**: Templates are processed using bkmr's `--interpolate` flag
 - **Environment variable escaping**: Smart handling of shell variables in snippets to prevent confusion with LSP client placeholder
-- **LSP commands**: Filepath comment insertion with automatic language detection
+- **Addtional LSP commands**: Filepath comment insertion with automatic language detection
 
 ## Requirements
 
@@ -55,15 +55,12 @@ bkmr add "console.log('Hello World');" javascript,test --type snip --title "JS H
 
 ## CLI Options
 
-bkmr-lsp supports several command-line options to customize behavior:
-
-### Environment Variable Escaping
-
-**Default behavior**: bkmr-lsp escapes environment variables in snippets to prevent LSP clients from misinterpreting them as snippet placeholders.
-
 ```bash
 # Disable environment variable escaping
 bkmr-lsp --no-escape-vars
+
+# Disable bkmr template interpolation
+bkmr-lsp --no-interpolation
 
 # Show help and available options
 bkmr-lsp --help
@@ -72,20 +69,30 @@ bkmr-lsp --help
 bkmr-lsp --version
 ```
 
-### Why Environment Variable Escaping?
+### Environment Variable Escaping
 
-bkmr snippets are designed to work in **both terminal and LSP environments**, unlike traditional editor-specific snippets. This dual-purpose design means:
+**Default behavior**: bkmr-lsp escapes environment variables in snippets to prevent LSP clients from misinterpreting
+them as snippet placeholders.
+
+#### Why?
+
+bkmr snippets are designed to work in **both terminal and LSP environments**, unlike traditional editor-specific
+snippets. This dual-purpose design means:
 
 - **Terminal use**: Snippets contain real shell variables like `$HOME`, `$USER`, `${PROJECT_ROOT}`
 - **LSP clients**: Interpret `$` syntax as snippet placeholders (`$1`, `${2:default}`, `${1|choice1,choice2|}`)
 - **Conflict**: Environment variables get treated as malformed placeholders, causing `$HOME` to become `HOME`
 
-**Smart escaping solution:**
+#### Solution
+1. Escape variables as you would do in VS-Code (`$HOME -> \$HOME`)
+- This is the normal behavior for LSP clients. The escaping ensures that `$HOME` appears as literal text rather than
+  being interpreted as a malformed snippet placeholder.
+
+2. **Smart escaping by bkmr-lsp server:**
 - **Environment variables** → Escaped: `$HOME` becomes `\$HOME`, `${USER}` becomes `\${USER}`
 - **LSP placeholders** → Preserved: `$1`, `${2:default}`, `${1|a,b,c|}` remain unchanged
 - **Result**: Same snippets work perfectly in both CLI and editor contexts
 
-**Note**: This is usually the correct behavior for LSP clients. The escaping ensures that `$HOME` appears as literal text rather than being interpreted as a malformed snippet placeholder.
 
 **Example transformation:**
 ```bash
@@ -93,7 +100,7 @@ bkmr snippets are designed to work in **both terminal and LSP environments**, un
 export PATH=$HOME/bin:$PATH
 cd ${PROJECT_ROOT}
 echo "User: $USER, step: $1"
-printf "${2|info,warn,error|}: %s\n" "$3"
+printf "${2|info,warn,error|}: %s\n" "$3"  # Snippet option
 
 # With escaping (default) for correct handling in LSP client:
 export PATH=\$HOME/bin:\$PATH
@@ -102,11 +109,41 @@ echo "User: \$USER, step: $1"
 printf "${2|info,warn,error|}: %s\n" "$3"
 ```
 
-### When to Disable Escaping
 
 Use `--no-escape-vars` when:
 - You prefer to handle escaping manually in your snippets
 - Your workflow doesn't require terminal compatibility
+
+### Template Interpolation
+
+**Default behavior**: bkmr-lsp uses the `--interpolate` flag when calling the bkmr CLI, which processes template variables and functions before serving snippets to LSP clients.
+
+#### Why?
+
+bkmr templates support dynamic content generation through:
+- **Variables**: `{{now}}`, `{{clipboard}}`, `{{file_stem}}`, etc.
+- **Functions**: `{{date("+%Y-%m-%d")}}`, `{{path_relative()}}`, etc. 
+- **Conditional logic**: `{{#if condition}}...{{/if}}`
+
+**Example transformation:**
+```bash
+# Template stored in bkmr:
+println!("Generated on {{now}} in {{file_stem}}");
+// TODO: {{clipboard}}
+
+# With interpolation (default):
+println!("Generated on 2024-01-15 14:30:22 in main");
+// TODO: copied text from clipboard
+
+# Without interpolation (--no-interpolation):
+println!("Generated on {{now}} in {{file_stem}}");
+// TODO: {{clipboard}}
+```
+
+Use `--no-interpolation` when:
+- You want to see the raw template syntax in completions  
+- You prefer to handle template processing manually after snippet insertion
+- Debugging template syntax or variables
 
 ## Configuration
 
@@ -199,29 +236,8 @@ require'lspconfig'.bkmr_lsp.setup{
 
 ## Usage
 
-### Snippet Completion
-
-Use manual completion to access snippets based on the current word under your cursor:
-
-- **Manual trigger**: `Ctrl+Space` (or your editor's completion hotkey)
-- **Word-based filtering**: Type a word, then trigger completion to find matching snippets
-- **Examples**: Type `hello` then Ctrl+Space, type `aws` then Ctrl+Space
-- **Navigation**: Use arrow keys, Tab or Enter to complete
-
-### Template Interpolation
-
-Snippets with templates are automatically processed ([server-side interpolation](https://github.com/sysid/bkmr/blob/main/docs/interpolation.md#template-interpolation-in-bkmr)):
-
-```bash
-# Snippet content: {{ "pwd" | shell }}
-# Completion inserts: /Users/username/project
-```
-
 ### Language-Aware Filtering
 
-The LSP server automatically filters snippets based on the file type (language ID) provided by your editor. This ensures you only see relevant snippets for your current context.
-
-**How it works:**
 1. **Language Detection**: When you open a file, the LSP client sends the language ID (e.g., `rust`, `python`, `javascript`)
 2. **Smart Filtering**: Shows snippets tagged with your current language PLUS universal snippets
 3. **FTS Query**: Builds optimized full-text search queries for bkmr
@@ -245,48 +261,28 @@ The LSP server automatically filters snippets based on the file type (language I
 **Setting up language-specific snippets:**
 ```bash
 # Tag snippets with language identifiers
-bkmr add -t rust -t _snip_ 'fn main() { println!("Hello"); }' 'Rust main function'
-bkmr add -t python -t _snip_ 'if __name__ == "__main__":' 'Python main guard'  
-bkmr add -t javascript -t _snip_ 'console.log("Hello");' 'JS console log'
-bkmr add -t yaml -t _snip_ 'version: "3.8"' 'Docker Compose version'
+bkmr add 'export $HOME' _snip_,sh --title export-home  # no escape necessary
+bkmr add '{{ "date -u +%Y-%m-%d %H:%M:%S" | shell }}' _snip_,universal --title date  # uses bkmr server-side interpolation
 ```
 
-**Query Examples:**
+`bkmr` queries, generated by the LSP server for different languages:
 ```bash
-# What the LSP server generates for different languages:
-# Rust file: (tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")
-# Python file: (tags:python AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")
-# With word filter: ((tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")) AND metadata:hello*
+# Shell file:
+(tags:sh AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")
+# With word filter:
+((tags:rust AND tags:"_snip_") OR (tags:universal AND tags:"_snip_")) AND metadata:hello*
 ```
 
 ### Universal Snippets
 
-Universal snippets work across all languages by using natural Rust syntax that gets automatically translated:
+Universal snippets are written in Rust syntax and get automatically translated:
 
-**Creating universal snippets:**
-```bash
-# Use natural Rust syntax with 'universal' tag
-bkmr add -t universal -t _snip_ '// Function: {{ function_name }}
-// TODO: implement
-    return {{ value }};' 'Function template'
-```
-
-**Automatic translation:**
 - **Python**: `// comment` becomes `# comment`
 - **HTML**: `// comment` becomes `<!-- comment -->`
 - **Indentation**: `    ` (4 spaces) becomes tabs for Go, 2 spaces for JavaScript, etc.
 - **Block comments**: `/* comment */` adapts to target language syntax
 
 See [UNIVERSAL_SNIPPETS.md](UNIVERSAL_SNIPPETS.md) for complete documentation.
-
-### Word-Based Filtering
-
-The completion system uses the current word under your cursor for intelligent filtering:
-
-- Type `aws` then Ctrl+Space to show AWS-related snippets
-- Type `config` then Ctrl+Space to show configuration snippets
-- Partial matches filter by snippet titles and content
-- Empty word shows all available snippets for the current language
 
 ### LSP Commands
 
@@ -295,24 +291,13 @@ The server provides LSP commands for additional functionality:
 #### `bkmr.insertFilepathComment`
 Insert the relative filepath as a comment at the beginning of the file.
 
-**Features:**
-- **Smart Comment Detection**: Automatically detects correct comment syntax for 20+ file types
-- **Project-Relative Paths**: Generates relative paths from project root (searches for `Cargo.toml`, `package.json`, `.git`, etc.)
-- **Language Support**: 
-  - C-style (`//`): Rust, Java, JavaScript, TypeScript, C++, Go, Swift, Kotlin, Scala, Dart
-  - Shell-style (`#`): Python, Shell, YAML, TOML, Ruby, Perl, R, Config files
-  - HTML/XML (`<!-- -->`): HTML, XML, SVG
-  - CSS (`/* */`): CSS, SCSS, Sass, Less
-  - SQL (`--`): SQL files
-  - And many more (Lua, Haskell, Lisp, VimScript, Batch, PowerShell, LaTeX, Fortran, MATLAB)
-
 **Example output:**
 ```rust
-// src/backend.rs  <---
+// src/backend.rs  <--- inserted at top of file
 use tower_lsp::LanguageServer;
 ```
 
-**Neovim Configuration with Custom Commands:**
+**Neovim Configuration:**
 
 ```lua
 if vim.fn.executable('bkmr-lsp') == 1 then
@@ -366,7 +351,8 @@ end
 ```
 
 **Usage in Other LSP Clients:**
-Most LSP clients can execute this command programmatically. For IntelliJ Platform IDEs, use the [bkmr-intellij-plugin](../bkmr-intellij-plugin) which provides UI integration.
+Most LSP clients can execute this command programmatically. For IntelliJ Platform IDEs, use the
+[bkmr-intellij-plugin](../bkmr-intellij-plugin) which provides UI integration.
 
 
 ## Troubleshooting

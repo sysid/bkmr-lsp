@@ -14,6 +14,7 @@ async fn test_config_edge_cases() {
         bkmr_binary: "".to_string(),
         max_completions: 0,
         escape_variables: true,
+        enable_interpolation: false,
     };
 
     assert_eq!(config.bkmr_binary, "");

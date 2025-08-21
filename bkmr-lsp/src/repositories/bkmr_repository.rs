@@ -20,10 +20,14 @@ impl BkmrRepository {
         let mut args = vec![
             "search".to_string(),
             "--json".to_string(),
-            "--interpolate".to_string(), // Always use interpolation
             "--limit".to_string(),
             filter.max_results.to_string(),
         ];
+
+        // Conditionally add interpolation flag
+        if self.config.enable_interpolation {
+            args.push("--interpolate".to_string());
+        }
 
         // Build FTS query that combines language-specific and universal snippets
         let mut fts_parts = Vec::new();

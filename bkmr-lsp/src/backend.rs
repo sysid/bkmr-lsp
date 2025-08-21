@@ -24,6 +24,7 @@ pub struct BkmrConfig {
     pub bkmr_binary: String,
     pub max_completions: usize,
     pub escape_variables: bool,
+    pub enable_interpolation: bool,
 }
 
 impl Default for BkmrConfig {
@@ -32,6 +33,7 @@ impl Default for BkmrConfig {
             bkmr_binary: "bkmr".to_string(),
             max_completions: 50,
             escape_variables: true,
+            enable_interpolation: true,
         }
     }
 }
@@ -72,6 +74,7 @@ impl BkmrLspBackend {
             binary_path: config.bkmr_binary.clone(),
             max_results: config.max_completions,
             timeout_seconds: 10,
+            enable_interpolation: config.enable_interpolation,
         };
         let repository = std::sync::Arc::new(BkmrRepository::new(repo_config));
         
