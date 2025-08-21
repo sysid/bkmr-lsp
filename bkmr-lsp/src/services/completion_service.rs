@@ -90,11 +90,7 @@ impl CompletionService {
         let translated_content = LanguageTranslator::translate_snippet(snippet, language_id, uri)
             .context("translate snippet content for target language")?;
 
-        // Apply environment variable escaping if enabled
-        let snippet_content = LanguageTranslator::escape_environment_variables(
-            &translated_content,
-            self.config.escape_variables,
-        );
+        let snippet_content = translated_content;
 
         let label = snippet.title.clone();
 
@@ -105,16 +101,23 @@ impl CompletionService {
             snippet_content.chars().take(20).collect::<String>()
         );
 
+        // Determine if this should be treated as plain text
+        let (item_kind, text_format, detail_text) = if snippet.is_plain() {
+            (CompletionItemKind::TEXT, InsertTextFormat::PLAIN_TEXT, "bkmr plain text")
+        } else {
+            (CompletionItemKind::SNIPPET, InsertTextFormat::SNIPPET, "bkmr snippet")
+        };
+
         let mut completion_item = CompletionItem {
             label: label.clone(),
-            kind: Some(CompletionItemKind::SNIPPET),
-            detail: Some("bkmr snippet".to_string()),
+            kind: Some(item_kind),
+            detail: Some(detail_text.to_string()),
             documentation: Some(Documentation::String(if snippet_content.len() > 500 {
                 format!("{}...", &snippet_content[..500])
             } else {
                 snippet_content.clone()
             })),
-            insert_text_format: Some(InsertTextFormat::SNIPPET),
+            insert_text_format: Some(text_format),
             filter_text: Some(label.clone()),
             sort_text: Some(label.clone()),
             ..Default::default()
@@ -271,5 +274,63 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[tokio::test]
+    async fn given_plain_snippet_when_creating_completion_item_then_uses_plain_text_format() {
+        // Arrange
+        let plain_snippet = Snippet::new(
+            1,
+            "Plain Text".to_string(),
+            "simple text content with no ${1:placeholders}".to_string(),
+            "Plain text snippet".to_string(),
+            vec!["plain".to_string(), "_snip_".to_string()],
+        );
+
+        let repository = Arc::new(MockSnippetRepository::new());
+        let service = CompletionService::new(repository);
+
+        let uri = Url::parse("file:///test.rs").expect("parse URI");
+
+        // Act
+        let result = service.snippet_to_completion_item(&plain_snippet, "", None, "rust", &uri);
+
+        // Assert
+        assert!(result.is_ok());
+        let item = result.expect("valid completion item");
+
+        assert_eq!(item.kind, Some(CompletionItemKind::TEXT));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::PLAIN_TEXT));
+        assert_eq!(item.detail, Some("bkmr plain text".to_string()));
+        assert_eq!(item.label, "Plain Text");
+    }
+
+    #[tokio::test]
+    async fn given_regular_snippet_when_creating_completion_item_then_uses_snippet_format() {
+        // Arrange
+        let regular_snippet = Snippet::new(
+            1,
+            "Regular Snippet".to_string(),
+            "snippet with ${1:placeholder}".to_string(),
+            "Regular snippet".to_string(),
+            vec!["rust".to_string(), "_snip_".to_string()],
+        );
+
+        let repository = Arc::new(MockSnippetRepository::new());
+        let service = CompletionService::new(repository);
+
+        let uri = Url::parse("file:///test.rs").expect("parse URI");
+
+        // Act
+        let result = service.snippet_to_completion_item(&regular_snippet, "", None, "rust", &uri);
+
+        // Assert
+        assert!(result.is_ok());
+        let item = result.expect("valid completion item");
+
+        assert_eq!(item.kind, Some(CompletionItemKind::SNIPPET));
+        assert_eq!(item.insert_text_format, Some(InsertTextFormat::SNIPPET));
+        assert_eq!(item.detail, Some("bkmr snippet".to_string()));
+        assert_eq!(item.label, "Regular Snippet");
     }
 }

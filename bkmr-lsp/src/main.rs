@@ -9,10 +9,6 @@ use tracing_subscriber::EnvFilter;
 #[command(about = "Language Server Protocol implementation for bkmr snippet manager")]
 #[command(version = env!("CARGO_PKG_VERSION"))]
 struct Args {
-    /// Disable environment variable escaping in LSP snippets
-    #[arg(long, help = "Disable escaping of environment variables ($VAR) in snippet content")]
-    no_escape_vars: bool,
-
     /// Disable bkmr template interpolation
     #[arg(long, help = "Disable bkmr template interpolation (serve raw templates instead of processed content)")]
     no_interpolation: bool,
@@ -58,7 +54,6 @@ async fn main() {
 
     // Create configuration from CLI args
     let config = BkmrConfig {
-        escape_variables: !args.no_escape_vars,
         enable_interpolation: !args.no_interpolation,
         ..Default::default()
     };

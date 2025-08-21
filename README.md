@@ -11,8 +11,8 @@ interpolated, delivering processed content rather than raw templates. Additional
 - **Language-aware filtering**: Snippets are filtered by file type (e.g., Rust files get only Rust snippets)
 - **Universal snippets**: Language-agnostic snippets with natural Rust syntax that automatically adapt to target languages
 - **Automatic interpolation**: Templates are processed using bkmr's `--interpolate` flag
-- **Environment variable escaping**: Smart handling of shell variables in snippets to prevent confusion with LSP client placeholder
-- **Addtional LSP commands**: Filepath comment insertion with automatic language detection
+- **Plain text snippets**: Snippets tagged with "plain" are treated as plain text without LSP snippet processing
+- **Additional LSP commands**: Filepath comment insertion with automatic language detection
 
 ## Requirements
 
@@ -56,9 +56,6 @@ bkmr add "console.log('Hello World');" javascript,test --type snip --title "JS H
 ## CLI Options
 
 ```bash
-# Disable environment variable escaping
-bkmr-lsp --no-escape-vars
-
 # Disable bkmr template interpolation
 bkmr-lsp --no-interpolation
 
@@ -69,50 +66,24 @@ bkmr-lsp --help
 bkmr-lsp --version
 ```
 
-### Environment Variable Escaping
+### Plain Text Snippets
 
-**Default behavior**: bkmr-lsp escapes environment variables in snippets to prevent LSP clients from misinterpreting
-them as snippet placeholders.
+Snippets tagged with "plain" are treated as plain text, preventing LSP clients from interpreting snippet syntax like `$1`, `${2:default}`, etc.
 
-#### Why?
+Some content should be inserted literally without any LSP snippet processing:
+- **Documentation templates**: Contains `${COMPANY}` or `${VERSION}` that should appear as literal text
+- **Configuration files**: Raw templates with placeholder syntax
+- **Shell scripts**: Variables like `$HOME` that shouldn't be treated as LSP placeholders
 
-bkmr snippets are designed to work in **both terminal and LSP environments**, unlike traditional editor-specific
-snippets. This dual-purpose design means:
+#### Usage
 
-- **Terminal use**: Snippets contain real shell variables like `$HOME`, `$USER`, `${PROJECT_ROOT}`
-- **LSP clients**: Interpret `$` syntax as snippet placeholders (`$1`, `${2:default}`, `${1|choice1,choice2|}`)
-- **Conflict**: Environment variables get treated as malformed placeholders, causing `$HOME` to become `HOME`
-
-#### Solution
-1. Escape variables as you would do in VS-Code (`$HOME -> \$HOME`)
-- This is the normal behavior for LSP clients. The escaping ensures that `$HOME` appears as literal text rather than
-  being interpreted as a malformed snippet placeholder.
-
-2. **Smart escaping by bkmr-lsp server:**
-- **Environment variables** → Escaped: `$HOME` becomes `\$HOME`, `${USER}` becomes `\${USER}`
-- **LSP placeholders** → Preserved: `$1`, `${2:default}`, `${1|a,b,c|}` remain unchanged
-- **Result**: Same snippets work perfectly in both CLI and editor contexts
-
-
-**Example transformation:**
 ```bash
-# Original snippet content:
-export PATH=$HOME/bin:$PATH
-cd ${PROJECT_ROOT}
-echo "User: $USER, step: $1"
-printf "${2|info,warn,error|}: %s\n" "$3"  # Snippet option
+# Create a plain text snippet
+bkmr add 'Config: ${DATABASE_URL}\nUser: ${USERNAME}' plain,_snip_ --title "Config Template"
 
-# With escaping (default) for correct handling in LSP client:
-export PATH=\$HOME/bin:\$PATH
-cd \${PROJECT_ROOT}
-echo "User: \$USER, step: $1"
-printf "${2|info,warn,error|}: %s\n" "$3"
+# Regular snippet (with LSP processing)
+bkmr add 'function ${1:name}() {\n    ${2:// implementation}\n}' javascript,_snip_ --title "JS Function"
 ```
-
-
-Use `--no-escape-vars` when:
-- You prefer to handle escaping manually in your snippets
-- Your workflow doesn't require terminal compatibility
 
 ### Template Interpolation
 
@@ -163,13 +134,13 @@ Install an LSP extension and add to `settings.json`:
 }
 ```
 
-**To disable environment variable escaping:**
+**To disable template interpolation:**
 ```json
 {
   "languageServerExample.servers": {
     "bkmr-lsp": {
       "command": "bkmr-lsp",
-      "args": ["--no-escape-vars"],
+      "args": ["--no-interpolation"],
       "filetypes": ["rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim"]
     }
   }
@@ -191,14 +162,14 @@ if executable('bkmr-lsp')
 endif
 ```
 
-**To disable environment variable escaping:**
+**To disable template interpolation:**
 ```vim
 if executable('bkmr-lsp')
   augroup LspBkmr
     autocmd!
     autocmd User lsp_setup call lsp#register_server({
       \ 'name': 'bkmr-lsp',
-      \ 'cmd': {server_info->['bkmr-lsp', '--no-escape-vars']},
+      \ 'cmd': {server_info->['bkmr-lsp', '--no-interpolation']},
       \ 'allowlist': ['rust', 'javascript', 'typescript', 'python', 'go', 'java', 'c', 'cpp', 'html', 'css', 'scss', 'ruby', 'php', 'swift', 'kotlin', 'shell', 'yaml', 'json', 'markdown', 'xml', 'vim'],
       \ })
   augroup END
@@ -215,10 +186,10 @@ require'lspconfig'.bkmr_lsp.setup{
 }
 ```
 
-**To disable environment variable escaping:**
+**To disable template interpolation:**
 ```lua
 require'lspconfig'.bkmr_lsp.setup{
-  cmd = { "bkmr-lsp", "--no-escape-vars" },
+  cmd = { "bkmr-lsp", "--no-interpolation" },
   filetypes = { "rust", "javascript", "typescript", "python", "go", "java", "c", "cpp", "html", "css", "scss", "ruby", "php", "swift", "kotlin", "shell", "yaml", "json", "markdown", "xml", "vim" },
 }
 ```
@@ -261,7 +232,7 @@ require'lspconfig'.bkmr_lsp.setup{
 **Setting up language-specific snippets:**
 ```bash
 # Tag snippets with language identifiers
-bkmr add 'export $HOME' _snip_,sh --title export-home  # no escape necessary
+bkmr add 'export $HOME' _snip_,sh,plain --title export-home  # plain: do not interpret $HOME as snippet variable, keep literal
 bkmr add '{{ "date -u +%Y-%m-%d %H:%M:%S" | shell }}' _snip_,universal --title date  # uses bkmr server-side interpolation
 ```
 
@@ -367,13 +338,14 @@ Most LSP clients can execute this command programmatically. For IntelliJ Platfor
 
 If LSP snippet navigation (`$1`, `${2:default}`) doesn't work:
 
-**Problem**: Escaping might be interfering (rare)
-**Solution**: Check your snippet content and verify LSP placeholders use correct syntax:
-- Simple tabstops: `$1`, `$2`, `$3`
-- Placeholders: `${1:default text}`, `${2:another default}`
-- Choices: `${1|option1,option2,option3|}`
-
-Environment variable escaping preserves these patterns, so this usually indicates a client configuration issue.
+**Problem**: Snippet might be tagged as "plain" or have malformed placeholder syntax
+**Solutions**:
+1. **Check if snippet is plain**: Plain text snippets (tagged with "plain") don't support LSP placeholders
+2. **Verify placeholder syntax**: 
+   - Simple tabstops: `$1`, `$2`, `$3`
+   - Placeholders: `${1:default text}`, `${2:another default}`
+   - Choices: `${1|option1,option2,option3|}`
+3. **Remove plain tag**: If you want LSP processing, remove "plain" from snippet tags
 
 ### Raw Templates in Completions
 
@@ -571,7 +543,7 @@ bkmr CLI Call → Universal Translation → LSP Response
   - Language-aware snippet filtering using `textDocument/didOpen` language ID
   - Universal snippets with natural Rust syntax translation
   - Template interpolation via bkmr `--interpolate` flag
-  - Environment variable escaping for LSP/terminal compatibility (configurable)
+  - Plain text snippets for literal content insertion (tag with "plain")
   - FTS-based queries for optimal snippet retrieval
   - Live snippet fetching with bkmr CLI integration
   - LSP commands for filepath comment insertion with language detection
