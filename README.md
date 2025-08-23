@@ -1,3 +1,7 @@
+## **bkmr-lsp has been fully integrated in [bkmr](https://github.com/sysid/bkmr).**
+
+This project has been archived.
+
 # bkmr-lsp
 
 Language Server Protocol (LSP) implementation for [bkmr](https://github.com/sysid/bkmr) snippet management.
